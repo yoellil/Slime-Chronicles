@@ -324,16 +324,42 @@ class GameEngine:
             return self.landing_state()
         data = copy.deepcopy(state)
         now = time.time()
+        # Basic public meta
         data["game_title"] = "Slime Chronicles"
         data["hero"] = hero_public()
+        data["character_info"] = data["hero"]
         data["story_objective"] = STORY_OBJECTIVES[state["story_phase"]]
         data["story_progress"] = self._story_progress(state)
+        data["chronicle_progress"] = data["story_progress"]
         data["pending_story"] = copy.deepcopy(STORY_NODES.get(state.get("pending_story")))
-        data["actions"] = [copy.deepcopy(ACTIONS[action_id]) for action_id in state["unlocked_actions"]]
+
+        # Resource naming for front-end convenience
+        data["resource_key"] = HERO.get("resource", "magicules")
+        data["resource_label"] = HERO.get("resource_label", "Magicules")
+
+        # Focus / UI niceties (frontend expects these keys)
+        data["focus"] = state.get("focus", 12)
+        data["max_focus"] = state.get("max_focus", 21)
+        data["focus_recovery_seconds"] = state.get("focus_recovery_seconds", 85)
+        data["alignment"] = state.get("alignment", "Unwritten")
+
+        # Normalize unlocked actions for UI (map duration -> cost, resource field)
+        normalized_actions = []
+        for action_id in state.get("unlocked_actions", []):
+            action = copy.deepcopy(ACTIONS[action_id])
+            # map duration to a small Focus cost for the UI
+            duration = action.get("duration", 6)
+            action["cost"] = max(1, round(duration / 3))
+            # primary resource gain (e.g., magicules)
+            action["resource"] = action.get(data["resource_key"], action.get("magicules", 0))
+            normalized_actions.append(action)
+        data["actions"] = normalized_actions
+
         if data.get("activity"):
             data["activity"]["remaining"] = max(0, round(data["activity"]["ends_at"] - now, 1))
             elapsed = data["activity"]["duration"] - data["activity"]["remaining"]
             data["activity"]["progress"] = max(0, min(100, round(elapsed / data["activity"]["duration"] * 100)))
+
         data["skills"] = [
             {**copy.deepcopy(skill), "unlocked": state["level"] >= skill["level"]} for skill in SKILLS
         ]
