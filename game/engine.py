@@ -332,6 +332,8 @@ class GameEngine:
         data["story_progress"] = self._story_progress(state)
         data["chronicle_progress"] = data["story_progress"]
         data["pending_story"] = copy.deepcopy(STORY_NODES.get(state.get("pending_story")))
+        # older client expects 'pending_choice' — provide the same payload under that key
+        data["pending_choice"] = copy.deepcopy(data["pending_story"])
 
         # Resource naming for front-end convenience
         data["resource_key"] = HERO.get("resource", "magicules")
