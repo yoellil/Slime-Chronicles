@@ -64,7 +64,10 @@ class ChronicleHandler(BaseHTTPRequestHandler):
                     raise GameError("Begin a chronicle first.")
                 ENGINE.refresh(state)
                 if path == "/api/action":
-                    result = ENGINE.start_activity(state, str(body.get("action", "")))
+                    # Support queuing by accepting an optional 'count' parameter
+                    action_id = str(body.get("action", ""))
+                    count = int(body.get("count", 1) or 1)
+                    result = ENGINE.enqueue_action(state, action_id, count)
                 elif path == "/api/action/cancel":
                     result = ENGINE.cancel_activity(state)
                 elif path == "/api/combat/start":

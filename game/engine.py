@@ -60,6 +60,8 @@ class GameEngine:
             "insight": 0,
             "training": {"attack": 0, "mana": 0},
             "activity": None,
+            # queued actions persist in the save so players can queue multiple runs
+            "action_queue": [],
             "action_counts": {action_id: 0 for action_id in ACTIONS},
             "unlocked_actions": ["gather_dew"],
             "unlocked_zones": [],
@@ -127,6 +129,33 @@ class GameEngine:
             "duration": duration,
         }
         self._log(state, f"Started {action['name']} ({duration} seconds).", "action")
+        return self.public_state(state)
+
+    def enqueue_action(self, state: dict[str, Any], action_id: str, count: int = 1) -> dict[str, Any]:
+        """Add one or more actions to the player's persistent action queue.
+
+        If no action is currently running, the first queued action will start immediately.
+        """
+        self._ensure_ready(state)
+        if action_id not in ACTIONS:
+            raise GameError("That action is unknown.")
+        if action_id not in state.get("unlocked_actions", []):
+            raise GameError("That action has not been discovered in this storyline.")
+        if count < 1:
+            raise GameError("Invalid queue count.")
+        # append action_id count times
+        for _ in range(count):
+            state.setdefault("action_queue", []).append(action_id)
+        self._log(state, f"Queued {count}x {ACTIONS[action_id]['name']}.", "system")
+        # if nothing is running, start the next queued action now
+        if not state.get("activity") and not state.get("pending_story") and not state.get("dungeon_run"):
+            try:
+                next_action = state["action_queue"].pop(0)
+                self.start_activity(state, next_action)
+            except GameError as e:
+                # if starting fails, put it back on the front and report
+                state.setdefault("action_queue", []).insert(0, next_action)
+                self._log(state, f"Queued action could not start: {str(e)}", "system")
         return self.public_state(state)
 
     def cancel_activity(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -380,6 +409,23 @@ class GameEngine:
             normalized_actions.append(action)
         data["actions"] = normalized_actions
 
+        # Present a compact view of the persistent action queue for the UI
+        queue = state.get("action_queue", []) or []
+        # aggregate contiguous identical actions into counts for nicer display
+        agg = []
+        if queue:
+            current = queue[0]
+            count = 1
+            for item in queue[1:]:
+                if item == current:
+                    count += 1
+                else:
+                    agg.append({"id": current, "count": count, "name": ACTIONS[current]["name"]})
+                    current = item
+                    count = 1
+            agg.append({"id": current, "count": count, "name": ACTIONS[current]["name"]})
+        data["action_queue"] = agg
+
         if data.get("activity"):
             data["activity"]["remaining"] = max(0, round(data["activity"]["ends_at"] - now, 1))
             elapsed = data["activity"]["duration"] - data["activity"]["remaining"]
@@ -465,6 +511,21 @@ class GameEngine:
                     ally["level"] += 1
                     self._log(state, f"{ALLIES[ally_id]['name']} reaches ally level {ally['level']}.", "growth")
         self._log(state, f"Completed {action['name']}: +{action['xp']} XP, +{action['magicules']} Magicules.", "action")
+        # After completing an activity, if the player queued additional actions, start the next one automatically
+        if state.get("action_queue"):
+            # pop next queued action and attempt to start it, but only if no pending_story/dungeon
+            try:
+                if not state.get("pending_story") and not state.get("dungeon_run"):
+                    next_action = state["action_queue"].pop(0)
+                    # Attempt to start next action; if it fails, reinsert removed item and log
+                    try:
+                        self.start_activity(state, next_action)
+                    except GameError as e:
+                        # requeue if start failed due to validation (e.g., party training requires allies)
+                        state.setdefault("action_queue", []).insert(0, next_action)
+                        self._log(state, f"Queued action could not start: {str(e)}", "system")
+            except Exception:
+                pass
 
     def _spawn_encounter(self, state: dict[str, Any]) -> None:
         run = state["dungeon_run"]

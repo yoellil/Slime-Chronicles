@@ -206,12 +206,15 @@ function bar(label, value, max, type) {
 function actionRow(action) {
   const running = state.activity && state.activity.action_id === action.id;
   const disabled = state.focus < action.cost || !!state.battle || running;
+  // compute queued count for this action from aggregated queue provided by server
+  const queueCount = (state.action_queue || []).reduce((sum, item) => sum + (item.id === action.id ? item.count : 0), 0);
   const progressHtml = running
-    ? `<div class="action-progress">${meter(state.activity.progress, 100, 'progress', action.name)}<div class="small">${state.activity.remaining}s remaining</div></div>`
+    ? `<div class="action-progress">${meter(state.activity.progress, 100, 'progress', action.name)}</div>`
     : "";
+  const queuedBadge = queueCount > 0 ? `<span class="queued-badge">${queueCount}</span>` : "";
   const buttons = running
     ? `<div class="action-buttons"><button class="action-cancel" data-cancel>Cancel</button></div>`
-    : `<div class="action-buttons"><button class="action-button" data-action="${escapeHtml(action.id)}" data-count="1" ${disabled ? "disabled" : ""}>×1</button><button class="action-button" data-action="${escapeHtml(action.id)}" data-count="5" ${disabled ? "disabled" : ""}>×5</button></div>`;
+    : `<div class="action-buttons">${queuedBadge}<button class="action-button" data-action="${escapeHtml(action.id)}" data-count="1" ${disabled ? "disabled" : ""}>×1</button><button class="action-button" data-action="${escapeHtml(action.id)}" data-count="5" ${disabled ? "disabled" : ""}>×5</button></div>`;
   return `
     <article class="action-item">
       <div>

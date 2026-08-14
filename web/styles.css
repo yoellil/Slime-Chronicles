@@ -489,6 +489,25 @@ button:focus-visible {
 .meter.mana > span { background: #718fdc; }
 .meter.focus > span { background: var(--gold); }
 
+/* Progress meters for timed actions should animate smoothly between server updates */
+.meter.progress > span {
+  transition: width 1200ms linear;
+}
+
+.queued-badge {
+  display: inline-block;
+  min-width: 1.6rem;
+  height: 1.6rem;
+  line-height: 1.6rem;
+  text-align: center;
+  border-radius: 0.5rem;
+  background: rgba(255,255,255,0.06);
+  color: var(--paper);
+  font-size: 0.78rem;
+  margin-right: 0.5rem;
+  padding: 0 0.35rem;
+}
+
 .stat-block {
   display: grid;
   gap: 0.75rem;
