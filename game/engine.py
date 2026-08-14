@@ -559,7 +559,11 @@ class GameEngine:
             self._log(state, f"EVOLUTION — Level {state['level']}. New strength settles into your slime body.", "growth")
 
     def _check_story_progress(self, state: dict[str, Any]) -> None:
+        # Do not interrupt active timed actions with new story discoveries; discoveries will be
+        # considered once the player is free to start a conversation.
         if state.get("pending_story"):
+            return
+        if state.get("activity"):
             return
         phase = state["story_phase"]
         # small helper: nodes already seen
