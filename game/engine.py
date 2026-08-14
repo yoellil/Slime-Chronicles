@@ -71,6 +71,7 @@ class GameEngine:
             "friendships": {},
             "story_phase": "awakening",
             "pending_story": "inner_voice",
+            "available_stories": [],
             "story_history": [],
             "branches": {},
             "total_victories": 0,
@@ -314,9 +315,31 @@ class GameEngine:
         )
         state["story_phase"] = node["next_phase"]
         state["pending_story"] = None
+        # remove node from available_stories if present
+        if "available_stories" in state and node_id in state["available_stories"]:
+            try:
+                state["available_stories"].remove(node_id)
+            except ValueError:
+                pass
         self._log(state, f"{node['speaker']}: {option['reply']}", "story")
         self._log(state, option["result"], "growth")
         self._check_story_progress(state)
+        return self.public_state(state)
+
+    def start_story(self, state: dict[str, Any], node_id: str) -> dict[str, Any]:
+        """Activate an available story node so the conversation appears (manual trigger).
+
+        The node must be discovered (in state['available_stories']) and no action must be running.
+        """
+        if not node_id or node_id not in STORY_NODES:
+            raise GameError("That conversation is unknown.")
+        if state.get("activity"):
+            raise GameError("Finish the current action before starting a conversation.")
+        if node_id not in state.get("available_stories", []) and state.get("pending_story") != node_id:
+            raise GameError("That conversation is not available right now.")
+        state["pending_story"] = node_id
+        node = STORY_NODES[node_id]
+        self._log(state, f"STORY STARTED — {node['title']}. A conversation opens.", "story")
         return self.public_state(state)
 
     def public_state(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -404,6 +427,11 @@ class GameEngine:
                 strength = data["battle"].get("strength")
                 if strength is not None:
                     data["battle"]["recruit_chance"] = round(recruitment_chance(strength) * 100)
+
+        # present any discovered story nodes for the UI to list and optionally start
+        data["available_stories"] = [
+            {**copy.deepcopy(STORY_NODES[n]), "id": n} for n in state.get("available_stories", [])
+        ]
         return data
 
     def _complete_activity(self, state: dict[str, Any]) -> None:
@@ -537,49 +565,52 @@ class GameEngine:
         # small helper: nodes already seen
         completed = {entry["node"] for entry in state.get("story_history", [])}
         # Primary story progression
+        # Primary story progression: add nodes to available_stories rather than forcing a popup
+        def offer(node_id):
+            if node_id not in state.get("available_stories", []) and node_id not in completed:
+                state.setdefault("available_stories", []).append(node_id)
+                node = STORY_NODES[node_id]
+                self._log(state, f"STORY DISCOVERED — {node['title']}. It is available in the story panel.", "story")
+
         if phase == "first_steps" and sum(state["action_counts"].values()) >= 3:
-            state["pending_story"] = "distant_roar"
-        elif phase == "seek_dragon" and state["zone_runs"]["sealed_cave"] >= 1:
-            state["pending_story"] = "meet_veldora"
+            offer("distant_roar")
+        elif phase == "seek_dragon" and state["zone_runs"].get("sealed_cave", 0) >= 1:
+            offer("meet_veldora")
         elif phase == "learn_from_friend" and state["action_counts"].get("magicule_circulation", 0) >= 2:
-            state["pending_story"] = "goblin_encounter"
+            offer("goblin_encounter")
         elif phase == "protect_village" and state["zone_runs"].get("forest_road", 0) >= 1:
-            state["pending_story"] = "wolf_decision"
+            offer("wolf_decision")
         elif phase == "chapter_one_complete" and state.get("total_runs", 0) >= 2:
-            state["pending_story"] = "crossroads"
+            offer("crossroads")
         elif phase == "alliance_paths" and sum(state.get("friendships", {}).values()) >= 6:
-            state["pending_story"] = "forge_alliance"
+            offer("forge_alliance")
         elif phase == "journey_to_capital" and state.get("total_victories", 0) >= 10:
-            state["pending_story"] = "capital_approach"
+            offer("capital_approach")
         elif phase == "prepare_final" and state.get("zone_runs", {}).get("lizard_marsh", 0) >= 2:
-            state["pending_story"] = "final_campaign"
+            offer("final_campaign")
 
-        # Side quests — unlocked by common play activities
-        if not state.get("pending_story"):
-            if state.get("action_counts", {}).get("silent_scout", 0) >= 1 and "lost_lantern" not in completed:
-                state["pending_story"] = "lost_lantern"
-            elif state.get("action_counts", {}).get("gather_dew", 0) >= 2 and "herbalist" not in completed:
-                state["pending_story"] = "herbalist"
-            elif state.get("zone_runs", {}).get("forest_road", 0) >= 1 and "bridge_repair" not in completed:
-                state["pending_story"] = "bridge_repair"
-            elif state.get("total_victories", 0) >= 3 and "bandit_contract" not in completed:
-                state["pending_story"] = "bandit_contract"
-            elif state.get("gold", 0) >= 8 and "merchant_offer" not in completed:
-                state["pending_story"] = "merchant_offer"
-            elif state.get("action_counts", {}).get("analyze_moss", 0) >= 1 and "hidden_library" not in completed:
-                state["pending_story"] = "hidden_library"
-            elif state.get("zone_runs", {}).get("ancient_ruins", 0) >= 1 and "ruins_cipher" not in completed:
-                state["pending_story"] = "ruins_cipher"
-            elif sum(state.get("friendships", {}).values()) >= 4 and "mercenary_trial" not in completed:
-                state["pending_story"] = "mercenary_trial"
-            elif state.get("zone_runs", {}).get("lizard_marsh", 0) >= 1 and "pond_rescue" not in completed:
-                state["pending_story"] = "pond_rescue"
-            elif state.get("zone_runs", {}).get("ancient_ruins", 0) >= 2 and "ancient_relic" not in completed:
-                state["pending_story"] = "ancient_relic"
+        # Side quests — discovered by common play activities (add them to available_stories)
+        if state.get("action_counts", {}).get("silent_scout", 0) >= 1 and "lost_lantern" not in completed:
+            offer("lost_lantern")
+        if state.get("action_counts", {}).get("gather_dew", 0) >= 2 and "herbalist" not in completed:
+            offer("herbalist")
+        if state.get("zone_runs", {}).get("forest_road", 0) >= 1 and "bridge_repair" not in completed:
+            offer("bridge_repair")
+        if state.get("total_victories", 0) >= 3 and "bandit_contract" not in completed:
+            offer("bandit_contract")
+        if state.get("gold", 0) >= 8 and "merchant_offer" not in completed:
+            offer("merchant_offer")
+        if state.get("action_counts", {}).get("analyze_moss", 0) >= 1 and "hidden_library" not in completed:
+            offer("hidden_library")
+        if state.get("zone_runs", {}).get("ancient_ruins", 0) >= 1 and "ruins_cipher" not in completed:
+            offer("ruins_cipher")
+        if sum(state.get("friendships", {}).values()) >= 4 and "mercenary_trial" not in completed:
+            offer("mercenary_trial")
+        if state.get("zone_runs", {}).get("lizard_marsh", 0) >= 1 and "pond_rescue" not in completed:
+            offer("pond_rescue")
+        if state.get("zone_runs", {}).get("ancient_ruins", 0) >= 2 and "ancient_relic" not in completed:
+            offer("ancient_relic")
 
-        if state.get("pending_story"):
-            node = STORY_NODES[state["pending_story"]]
-            self._log(state, f"STORY UNLOCKED — {node['title']}. A conversation awaits.", "story")
 
     @staticmethod
     def _story_progress(state: dict[str, Any]) -> int:

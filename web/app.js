@@ -173,6 +173,10 @@ function renderGame() {
             <div class="section-title"><h3>Available actions</h3><span>Focus restores every ${state.focus_recovery_seconds}s</span></div>
             <div class="action-list">${state.actions.map(actionRow).join("")}</div>
           </section>
+          <section class="stories-section">
+            <div class="section-title"><h3>Stories</h3><span>Discovered but not yet started</span></div>
+            <div class="story-list">${(state.available_stories || []).map(s => storyRow(s)).join("")}</div>
+          </section>
           <section class="log-section">
             <div class="section-title"><h3>Living chronicle</h3><span>${state.total_victories} victories recorded</span></div>
             <div class="log-list">${[...state.log].reverse().map(logEntry).join("")}</div>
@@ -200,19 +204,28 @@ function bar(label, value, max, type) {
 }
 
 function actionRow(action) {
-  const disabled = state.focus < action.cost || !!state.battle;
+  const running = state.activity && state.activity.action_id === action.id;
+  const disabled = state.focus < action.cost || !!state.battle || running;
+  const progressHtml = running
+    ? `<div class="action-progress">${meter(state.activity.progress, 100, 'progress', action.name)}<div class="small">${state.activity.remaining}s remaining</div></div>`
+    : "";
+  const buttons = running
+    ? `<div class="action-buttons"><button class="action-cancel" data-cancel>Cancel</button></div>`
+    : `<div class="action-buttons"><button class="action-button" data-action="${escapeHtml(action.id)}" data-count="1" ${disabled ? "disabled" : ""}>×1</button><button class="action-button" data-action="${escapeHtml(action.id)}" data-count="5" ${disabled ? "disabled" : ""}>×5</button></div>`;
   return `
     <article class="action-item">
       <div>
         <strong>${escapeHtml(action.name)}</strong>
         <p>${escapeHtml(action.description)}</p>
         <div class="action-cost">${action.cost} Focus · +${action.xp} XP · +${action.resource} ${escapeHtml(state.resource_label)}</div>
+        ${progressHtml}
       </div>
-      <div class="action-buttons">
-        <button class="action-button" data-action="${escapeHtml(action.id)}" data-count="1" ${disabled ? "disabled" : ""}>×1</button>
-        <button class="action-button" data-action="${escapeHtml(action.id)}" data-count="5" ${disabled ? "disabled" : ""}>×5</button>
-      </div>
+      ${buttons}
     </article>`;
+}
+
+function storyRow(story) {
+  return `<article class="story-item"><div><strong>${escapeHtml(story.title)}</strong><p>${escapeHtml(story.text || story.subtitle || '')}</p></div><div><button class="story-start" data-story="${escapeHtml(story.id)}">Start</button></div></article>`;
 }
 
 function logEntry(item) {
@@ -294,6 +307,8 @@ function bindGameEvents() {
     selectedEnemyIndex = idx;
     render();
   }));
+  app.querySelectorAll("[data-cancel]").forEach((btn) => btn.addEventListener("click", () => mutate("/api/action/cancel")));
+  app.querySelectorAll(".story-start").forEach((btn) => btn.addEventListener("click", () => mutate("/api/story/start", { node: btn.dataset.story })));
   app.querySelector("#flee-button")?.addEventListener("click", () => mutate("/api/combat/flee"));
   app.querySelector("#rest-button")?.addEventListener("click", () => mutate("/api/rest"));
   app.querySelector("#auto-combat")?.addEventListener("change", (event) => toggleAuto(event.target.checked));
@@ -368,7 +383,7 @@ async function boot() {
   try {
     state = await api("/api/state");
     render();
-    refreshTimer = window.setInterval(refreshState, 8000);
+    refreshTimer = window.setInterval(refreshState, 2000);
   } catch (error) {
     app.innerHTML = `<section class="loading-screen"><p class="eyebrow">THE PYTHON SERVER IS ASLEEP</p><p>${escapeHtml(error.message)}</p></section>`;
   }

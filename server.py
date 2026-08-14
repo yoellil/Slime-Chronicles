@@ -72,6 +72,8 @@ class ChronicleHandler(BaseHTTPRequestHandler):
                 elif path == "/api/combat/turn":
                     # Accept optional 'target' parameter (0-based index or name)
                     result = ENGINE.combat_turn(state, str(body.get("skill", "")), body.get("target"))
+                elif path == "/api/story/start":
+                    result = ENGINE.start_story(state, str(body.get("node", "")))
                 elif path == "/api/combat/flee":
                     result = ENGINE.abandon_dungeon(state)
                 elif path == "/api/party/toggle":
