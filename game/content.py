@@ -805,6 +805,182 @@ STORY_NODES.update({
     },
 })
 
+# ============================================================
+# Routines & Habits
+# Habit Points earned from the Dark Ritual are assigned to routines.
+# Each assigned point grants a permanent passive multiplier that survives
+# every reset, including Reincarnation.
+# ============================================================
+ROUTINES = {
+    "worship": {
+        "id": "worship", "name": "Worship the Storm Dragon",
+        "description": "Daily prayers to Veldora. +4% Magicules per Habit Point.",
+        "resource": "magicules", "per_point": 0.04,
+    },
+    "study": {
+        "id": "study", "name": "Study with the Great Sage",
+        "description": "Constant analysis of everything you touch. +4% XP per Habit Point.",
+        "resource": "xp", "per_point": 0.04,
+    },
+    "sword_drills": {
+        "id": "sword_drills", "name": "Sword Drills with Hakuro",
+        "description": "Relentless morning training. +3% Attack per Habit Point.",
+        "resource": "attack", "per_point": 0.03,
+    },
+    "commerce": {
+        "id": "commerce", "name": "Trade with Dwargon",
+        "description": "Standing caravans to the dwarven kingdom. +4% Gold per Habit Point.",
+        "resource": "gold", "per_point": 0.04,
+    },
+    "dissection": {
+        "id": "dissection", "name": "Monster Dissection",
+        "description": "Vesta's laboratory never sleeps. +4% Research per Habit Point.",
+        "resource": "research", "per_point": 0.04,
+    },
+    "body_forging": {
+        "id": "body_forging", "name": "Slime Body Forging",
+        "description": "Endless reshaping toughens the core. +3% Max HP per Habit Point.",
+        "resource": "hp", "per_point": 0.03,
+    },
+}
+
+# ============================================================
+# Seeds — permanent base stats fed to Rimuru or an ally.
+# Bosses always drop one seed; the type depends on the boss.
+# ============================================================
+SEEDS = {
+    "physical": {
+        "id": "physical", "name": "Physical Seed",
+        "description": "A dense magicule core. Grants raw body strength.",
+        "hero": {"attack": 1, "max_hp": 4},
+        "ally": {"attack": 1},
+    },
+    "magical": {
+        "id": "magical", "name": "Magical Seed",
+        "description": "A crystallised spirit core. Grants magical capacity.",
+        "hero": {"max_mana": 3, "defense": 1},
+        "ally": {"defense": 1},
+    },
+}
+
+# Bosses that favour a magical seed; every other boss drops a physical seed.
+MAGICAL_SEED_BOSSES = {
+    "Marsh Basilisk",
+    "Ruins Sentinel",
+    "Falmuth King",
+    "Demon Lord Clayman",
+}
+
+# ============================================================
+# Gluttony — food drops
+# Enemies drop themed food. With Gluttony unlocked the food is devoured
+# instantly and each stack grants a permanent modifier scaled by the
+# Gluttony level, exactly like Your Chronicle's food farming.
+# ============================================================
+FOODS = {
+    "pork": {"id": "pork", "name": "Orc Pork", "description": "+1% Attack per Gluttony level for every stack.", "stat": "attack", "per_stack": 0.01},
+    "hipokute": {"id": "hipokute", "name": "Hipokute Herb", "description": "+1% Max HP per Gluttony level for every stack.", "stat": "hp", "per_stack": 0.01},
+    "rabbit_meat": {"id": "rabbit_meat", "name": "Horned Rabbit Meat", "description": "+1% XP per Gluttony level for every stack.", "stat": "xp", "per_stack": 0.01},
+    "cave_mushroom": {"id": "cave_mushroom", "name": "Cave Mushroom", "description": "+1% Magicules per Gluttony level for every stack.", "stat": "magicules", "per_stack": 0.01},
+    "marsh_roe": {"id": "marsh_roe", "name": "Marsh Roe", "description": "+1% Gold per Gluttony level for every stack.", "stat": "gold", "per_stack": 0.01},
+    "dragon_fruit": {"id": "dragon_fruit", "name": "Dragon Fruit", "description": "+1% Research per Gluttony level for every stack.", "stat": "research", "per_stack": 0.01},
+}
+
+# Which food a defeated creature leaves behind. Anything unlisted drops
+# nothing, so food farming rewards choosing the right expedition.
+FOOD_SOURCES = {
+    "Cave Bat": "cave_mushroom",
+    "Acid Slug": "cave_mushroom",
+    "Armored Spider": "cave_mushroom",
+    "Armored Centipede": "cave_mushroom",
+    "Horned Rabbit": "rabbit_meat",
+    "Direwolf Scout": "rabbit_meat",
+    "Forest Lizard": "hipokute",
+    "Fang Captain": "rabbit_meat",
+    "Giant Marsh Frog": "marsh_roe",
+    "Mud Crawler": "marsh_roe",
+    "Poison Newt": "hipokute",
+    "Marsh Basilisk": "marsh_roe",
+    "Orc Warrior": "pork",
+    "Orc Berserker": "pork",
+    "Orc Shaman": "pork",
+    "Orc Lord Geld": "pork",
+    "Forest Treant": "hipokute",
+    "Forest Wyrm": "dragon_fruit",
+    "Giant Bear": "pork",
+    "Forest Guardian": "hipokute",
+    "Lizardman Warrior": "marsh_roe",
+    "Lizardman Spearman": "marsh_roe",
+    "Lizardman Shaman": "hipokute",
+    "Lizardman Chief Gabiru": "dragon_fruit",
+    "Dwarf Guard": "rabbit_meat",
+    "Mountain Troll": "pork",
+    "Dwarf King Gazel": "dragon_fruit",
+    "Falmuth Knight": "rabbit_meat",
+    "Royal Guard": "rabbit_meat",
+    "Falmuth King": "dragon_fruit",
+    "Demon Knight": "dragon_fruit",
+    "Demon General": "dragon_fruit",
+    "Demon Lord's Herald": "dragon_fruit",
+    "Demon Lord Clayman": "dragon_fruit",
+}
+
+# ============================================================
+# Sin effects — every sin now changes the simulation.
+# ============================================================
+SIN_EFFECTS = {
+    "gluttony": {"kind": "food", "per_level": 1.0, "summary": "Devour food drops automatically; each stack counts once per Gluttony level."},
+    "sloth": {"kind": "loop_speed", "per_level": 0.05, "summary": "Loop actions tick 5% faster per level (max 60%)."},
+    "greed": {"kind": "multiplier", "resource": "gold", "per_level": 0.05, "summary": "+5% Gold per level."},
+    "pride": {"kind": "multiplier", "resource": "xp", "per_level": 0.05, "summary": "+5% XP per level."},
+    "envy": {"kind": "multiplier", "resource": "research", "per_level": 0.05, "summary": "+5% Research per level."},
+    "wrath": {"kind": "multiplier", "resource": "attack", "per_level": 0.05, "summary": "+5% Attack per level."},
+    "lust": {"kind": "recruit", "per_level": 0.02, "summary": "+2% recruitment chance per level."},
+}
+
+# ============================================================
+# Endings — recorded when the chronicle reaches its epilogue.
+# The dominant branch of your choices decides which ending is written,
+# and every distinct ending permanently rewards the next life.
+# ============================================================
+ENDINGS = {
+    "benevolent": {
+        "id": "benevolent", "name": "The Kind Demon Lord",
+        "description": "Tempest becomes a haven where monsters and humans share one table.",
+        "branches": {"Diplomatic", "Protective", "Provider", "Merciful", "Accepting", "Companion"},
+        "reward": {"inspiration": 2},
+    },
+    "conqueror": {
+        "id": "conqueror", "name": "The Tyrant of the Storm",
+        "description": "Every kingdom that raised a blade against Tempest is erased from the map.",
+        "branches": {"Aggressive", "Ruthless", "Wrathful", "Dominant"},
+        "reward": {"inspiration": 2},
+    },
+    "sage": {
+        "id": "sage", "name": "The Sage of the Jura Forest",
+        "description": "You spend your reign unravelling the world's laws beside the Great Sage.",
+        "branches": {"Analytical", "Curious", "Scholarly", "Cautious"},
+        "reward": {"inspiration": 2},
+    },
+    "wanderer": {
+        "id": "wanderer", "name": "The Nameless Slime",
+        "description": "You leave the throne behind and drift back into the forest, unrecorded.",
+        "branches": set(),
+        "reward": {"inspiration": 1},
+    },
+}
+
+
+def food_for_enemy(enemy_name: str) -> str | None:
+    """Return the food id a defeated creature leaves behind, if any."""
+    return FOOD_SOURCES.get(enemy_name)
+
+
+def seed_for_boss(boss_name: str) -> str:
+    """Bosses drop a magical seed if they are spellcasters, else a physical seed."""
+    return "magical" if boss_name in MAGICAL_SEED_BOSSES else "physical"
+
+
 def hero_public() -> dict:
     return {key: value for key, value in HERO.items() if key != "base"} | {"stats": dict(HERO["base"])}
 

@@ -993,6 +993,23 @@ svg {
   transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
 }
 
+.seed-target {
+  padding: 0.55rem 0.6rem;
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
+  border-radius: var(--radius-sm);
+  background: rgba(var(--accent-rgb), 0.07);
+  color: var(--accent);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.seed-target option {
+  background: #101418;
+  color: var(--accent);
+}
+
 .action-button:hover,
 .skill-button:hover,
 .zone-button:hover {

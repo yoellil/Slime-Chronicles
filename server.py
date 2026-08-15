@@ -104,6 +104,14 @@ class ChronicleHandler(BaseHTTPRequestHandler):
                     result = ENGINE.buy_astral_upgrade(state, str(body.get("upgrade", "")))
                 elif path == "/api/reincarnate":
                     result = ENGINE.reincarnate(state, str(body.get("class", "")))
+                elif path == "/api/habit/assign":
+                    result = ENGINE.assign_habit(state, str(body.get("routine", "")), int(body.get("points", 1) or 1))
+                elif path == "/api/habit/unassign":
+                    result = ENGINE.unassign_habit(state, str(body.get("routine", "")), int(body.get("points", 1) or 1))
+                elif path == "/api/seed/feed":
+                    result = ENGINE.feed_seed(state, str(body.get("seed", "")), str(body.get("target", "hero")))
+                elif path == "/api/food/consume":
+                    result = ENGINE.consume_food(state, str(body.get("food", "")), int(body.get("count", 1) or 1))
                 elif path == "/api/sin/unlock":
                     result = ENGINE.unlock_sin(state, str(body.get("sin", "")))
                 elif path == "/api/sin/level":

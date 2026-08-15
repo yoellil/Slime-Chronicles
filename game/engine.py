@@ -12,16 +12,23 @@ from .content import (
     ALLIES,
     ASTRAL_UPGRADES,
     DARK_RITUAL,
+    ENDINGS,
+    FOODS,
     HERO,
     REINCARNATION_CLASSES,
     RESEARCH_COSTS,
+    ROUTINES,
+    SEEDS,
+    SIN_EFFECTS,
     SINS,
     SKILLS,
     STORY_NODES,
     STORY_OBJECTIVES,
     ZONES,
+    food_for_enemy,
     hero_public,
     recruitment_chance,
+    seed_for_boss,
 )
 
 
@@ -30,7 +37,7 @@ class GameError(ValueError):
 
 
 class GameEngine:
-    VERSION = 3
+    VERSION = 4
     MAX_LOG = 64
     MAX_PARTY = 3
     MAX_PASSIVE = 2
@@ -101,7 +108,14 @@ class GameEngine:
             "next_actions_completed": [],
             "research_unlocks": {},
             "habit_points": 0,
+            "routines": {routine_id: 0 for routine_id in ROUTINES},
             "inspiration": 0,
+            "seeds": {seed_id: 0 for seed_id in SEEDS},
+            "seed_bonus": {"attack": 0, "defense": 0, "max_hp": 0, "max_mana": 0},
+            "ally_seeds": {},
+            "foods": {food_id: 0 for food_id in FOODS},
+            "gluttony_stacks": {food_id: 0 for food_id in FOODS},
+            "endings": [],
             "astral_upgrades": {},
             "reincarnations": 0,
             "reincarnation_class": None,
@@ -112,6 +126,20 @@ class GameEngine:
         self._log(state, "A voice inside your mind is waiting for an answer.", "system")
         return state
 
+    def _migrate(self, state: dict[str, Any]) -> None:
+        """Bring an older save up to the current engine without wiping progress."""
+        template = self.new_game(state.get("character", "rimuru"))
+        template["log"] = state.get("log", [])
+        for key, value in template.items():
+            if key in ("version", "log"):
+                continue
+            state.setdefault(key, copy.deepcopy(value))
+        for mapping in ("routines", "seeds", "foods", "gluttony_stacks", "seed_bonus"):
+            for key, value in template[mapping].items():
+                state[mapping].setdefault(key, value)
+        state["version"] = self.VERSION
+        self._log(state, "Your chronicle was rewritten to include routines, seeds, and feasts.", "system")
+
     @staticmethod
     def xp_needed(level: int) -> int:
         return max(16, round(16 * (level**1.5)))
@@ -120,12 +148,7 @@ class GameEngine:
         if not state.get("started"):
             return self.landing_state()
         if state.get("version") != self.VERSION:
-            replacement = self.new_game()
-            replacement["log"].append(
-                {"text": "Your earlier save was reshaped for the new Rimuru-only story.", "kind": "system", "time": int(time.time())}
-            )
-            state.clear()
-            state.update(replacement)
+            self._migrate(state)
         activity = state.get("activity")
         if activity and time.time() >= activity["ends_at"]:
             self._complete_activity(state)
@@ -133,6 +156,8 @@ class GameEngine:
         self._process_loops(state)
         # recover focus over time
         self._recover_focus(state)
+        # keep Max HP in sync with habit/sin/astral multipliers
+        self._sync_hp_multiplier(state)
         # process instant action cooldowns
         self._process_cooldowns(state)
         self._check_story_progress(state)
@@ -183,8 +208,8 @@ class GameEngine:
         self._log(state, f"Queued {count}x {ACTIONS[action_id]['name']}.", "system")
         # if nothing is running, start the next queued action now
         if not state.get("activity") and not state.get("pending_story") and not state.get("dungeon_run"):
+            next_action = state["action_queue"].pop(0)
             try:
-                next_action = state["action_queue"].pop(0)
                 self.start_activity(state, next_action)
             except GameError as e:
                 # if starting fails, put it back on the front and report
@@ -258,23 +283,31 @@ class GameEngine:
         # check costs
         focus_cost = action.get("focus_cost", 0)
         gold_cost = action.get("gold_cost", 0)
+        magicules_cost = action.get("magicules_cost", 0)
         if state["focus"] < focus_cost:
             raise GameError("Not enough Focus.")
         if state["gold"] < gold_cost:
             raise GameError("Not enough Gold.")
+        if state["magicules"] < magicules_cost:
+            raise GameError("Not enough Magicules.")
         # apply costs
         state["focus"] -= focus_cost
         state["gold"] -= gold_cost
+        state["magicules"] -= magicules_cost
         # apply rewards with multipliers
         magicules = round(action.get("magicules", 0) * self._multiplier(state, "magicules"))
         gold = round(action.get("gold", 0) * self._multiplier(state, "gold"))
-        insight = action.get("insight", 0) + self._multiplier(state, "insight")
+        insight = round(action.get("insight", 0) + self._multiplier(state, "insight"))
+        xp = round(action.get("xp", 0) * self._multiplier(state, "xp"))
         state["magicules"] += magicules
         state["gold"] += gold
         state["insight"] += insight
+        if xp:
+            self._grant_xp(state, xp)
         # set cooldown
         cooldowns[action_id] = now + action.get("cooldown", 10)
-        self._log(state, f"{action['name']}: +{magicules} Magicules, +{gold} Gold, +{insight} Insight.", "action")
+        gains = [f"+{magicules} Magicules" if magicules else "", f"+{gold} Gold" if gold else "", f"+{insight} Insight" if insight else "", f"+{xp} XP" if xp else ""]
+        self._log(state, f"{action['name']}: {', '.join(part for part in gains if part) or 'no gain'}.", "action")
         return self.public_state(state)
 
     # ============================================================
@@ -297,11 +330,11 @@ class GameEngine:
         # apply effects
         for stat, amount in action.get("effect", {}).items():
             if stat == "party_slots":
-                if len(state["active_party"]) >= self.MAX_PARTY + 2:
+                if state.get("max_party_slots", self.MAX_PARTY) >= self.MAX_PARTY + 2:
                     raise GameError("Party slots are already at maximum.")
                 state["max_party_slots"] = state.get("max_party_slots", self.MAX_PARTY) + 1
             elif stat == "passive_slots":
-                if len(state["passive_party"]) >= self.MAX_PASSIVE + 2:
+                if state.get("max_passive_slots", self.MAX_PASSIVE) >= self.MAX_PASSIVE + 2:
                     raise GameError("Passive slots are already at maximum.")
                 state["max_passive_slots"] = state.get("max_passive_slots", self.MAX_PASSIVE) + 1
             else:
@@ -339,6 +372,8 @@ class GameEngine:
         if target_phase and state["story_phase"] != target_phase:
             state["story_phase"] = target_phase
             self._log(state, f"STORY ADVANCED — {action['name']} completed. New chapter begins.", "story")
+            if target_phase == "epilogue":
+                self._record_ending(state)
         self._log(state, f"Checkpoint complete: {action['name']}.", "growth")
         self._check_story_progress(state)
         return self.public_state(state)
@@ -402,6 +437,7 @@ class GameEngine:
         # add habit points and inspiration
         state["habit_points"] = state.get("habit_points", 0) + habit_gain
         state["inspiration"] = state.get("inspiration", 0) + inspiration_gain
+        self._apply_seed_bonus(state)
         self._log(state, f"DARK RITUAL — Gained {habit_gain} Habit Points and {inspiration_gain} Inspiration.", "growth")
         return self.public_state(state)
 
@@ -418,6 +454,86 @@ class GameEngine:
         state["inspiration"] -= upgrade["cost"]
         state.setdefault("astral_upgrades", {})[upgrade_id] = current_level + 1
         self._log(state, f"Astral upgrade: {upgrade['name']} (level {current_level + 1}).", "growth")
+        return self.public_state(state)
+
+    # ============================================================
+    # Routines & Habits
+    # ============================================================
+    def assign_habit(self, state: dict[str, Any], routine_id: str, points: int = 1) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if routine_id not in ROUTINES:
+            raise GameError("That routine is unknown.")
+        if points < 1:
+            raise GameError("Assign at least one Habit Point.")
+        if state.get("habit_points", 0) < points:
+            raise GameError("Not enough Habit Points.")
+        state["habit_points"] -= points
+        routines = state.setdefault("routines", {})
+        routines[routine_id] = routines.get(routine_id, 0) + points
+        self._log(state, f"Routine strengthened: {ROUTINES[routine_id]['name']} ({routines[routine_id]} Habit Points).", "growth")
+        return self.public_state(state)
+
+    def unassign_habit(self, state: dict[str, Any], routine_id: str, points: int = 1) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if routine_id not in ROUTINES:
+            raise GameError("That routine is unknown.")
+        routines = state.setdefault("routines", {})
+        if points < 1 or routines.get(routine_id, 0) < points:
+            raise GameError("That routine does not hold that many Habit Points.")
+        routines[routine_id] -= points
+        state["habit_points"] = state.get("habit_points", 0) + points
+        self._log(state, f"Routine relaxed: {ROUTINES[routine_id]['name']} ({routines[routine_id]} Habit Points).", "system")
+        return self.public_state(state)
+
+    # ============================================================
+    # Seeds — permanent base stats
+    # ============================================================
+    def feed_seed(self, state: dict[str, Any], seed_id: str, target: str = "hero") -> dict[str, Any]:
+        self._ensure_ready(state)
+        if seed_id not in SEEDS:
+            raise GameError("That seed is unknown.")
+        if state.get("seeds", {}).get(seed_id, 0) < 1:
+            raise GameError(f"You have no {SEEDS[seed_id]['name']}. Defeat expedition bosses to harvest them.")
+        seed = SEEDS[seed_id]
+        state["seeds"][seed_id] -= 1
+        if target == "hero":
+            bonus = state.setdefault("seed_bonus", {"attack": 0, "defense": 0, "max_hp": 0, "max_mana": 0})
+            for stat, amount in seed["hero"].items():
+                bonus[stat] = bonus.get(stat, 0) + amount
+                state[stat] = state.get(stat, 0) + amount
+                if stat == "max_hp":
+                    state["hp"] = min(state["max_hp"], state["hp"] + amount)
+                if stat == "max_mana":
+                    state["mana"] = min(state["max_mana"], state["mana"] + amount)
+            gains = ", ".join(f"+{amount} {stat.replace('_', ' ').title()}" for stat, amount in seed["hero"].items())
+            self._log(state, f"You absorb a {seed['name']}: {gains}.", "growth")
+            return self.public_state(state)
+        if target not in state.get("allies", {}):
+            state["seeds"][seed_id] += 1
+            raise GameError("That creature has not joined your allies.")
+        ally_seeds = state.setdefault("ally_seeds", {}).setdefault(target, {"attack": 0, "defense": 0})
+        for stat, amount in seed["ally"].items():
+            ally_seeds[stat] = ally_seeds.get(stat, 0) + amount
+        gains = ", ".join(f"+{amount} {stat.title()}" for stat, amount in seed["ally"].items())
+        self._log(state, f"{ALLIES[target]['name']} devours a {seed['name']}: {gains}.", "growth")
+        return self.public_state(state)
+
+    # ============================================================
+    # Gluttony — food
+    # ============================================================
+    def consume_food(self, state: dict[str, Any], food_id: str, count: int = 1) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if food_id not in FOODS:
+            raise GameError("That food is unknown.")
+        if "gluttony" not in state.get("sins", {}):
+            raise GameError("Awaken the sin of Gluttony before devouring food.")
+        available = state.get("foods", {}).get(food_id, 0)
+        if count < 1 or available < count:
+            raise GameError("You do not have that much food stored.")
+        state["foods"][food_id] = available - count
+        stacks = state.setdefault("gluttony_stacks", {})
+        stacks[food_id] = stacks.get(food_id, 0) + count
+        self._log(state, f"Gluttony devours {count}× {FOODS[food_id]['name']} — {stacks[food_id]} stacks held.", "growth")
         return self.public_state(state)
 
     # ============================================================
@@ -461,7 +577,19 @@ class GameEngine:
         state["friendships"] = {}
         state["reincarnations"] = reincarnations + 1
         state["reincarnation_class"] = class_id
-        # keep astral upgrades, habit points, inspiration, story progress
+        state["ally_seeds"] = {}
+        self._apply_seed_bonus(state)
+        # keep astral upgrades, habit points, routines, inspiration, story progress
+        self._record_ending(state)
+        # the chronicle can be told again from the beginning
+        state["story_phase"] = "awakening"
+        state["pending_story"] = "inner_voice"
+        state["available_stories"] = []
+        state["story_history"] = []
+        state["branches"] = {}
+        state["unlocked_actions"] = ["gather_dew"]
+        state["unlocked_zones"] = []
+        state["next_actions_completed"] = []
         self._log(state, f"REINCARNATION — You are reborn as a {cls['name']}. The world remembers your legend.", "story")
         return self.public_state(state)
 
@@ -852,12 +980,14 @@ class GameEngine:
         for ally_id, progress in state["allies"].items():
             base = ALLIES[ally_id]
             level_bonus = progress["level"] - 1
+            ally_seeds = state.get("ally_seeds", {}).get(ally_id, {})
             data["party"].append(
                 {
                     **copy.deepcopy(base),
                     **copy.deepcopy(progress),
-                    "attack": base["attack"] + level_bonus,
-                    "defense": base["defense"] + level_bonus // 2,
+                    "attack": base["attack"] + level_bonus + ally_seeds.get("attack", 0),
+                    "defense": base["defense"] + level_bonus // 2 + ally_seeds.get("defense", 0),
+                    "seeds": copy.deepcopy(ally_seeds),
                     "active": ally_id in state["active_party"],
                     "passive": ally_id in state["passive_party"],
                 }
@@ -973,8 +1103,59 @@ class GameEngine:
                 "can_unlock": state["level"] >= sin["unlock_level"],
             })
 
+        # Sin effect summaries so the UI can explain what each sin does
+        for entry in data["sins"]:
+            entry["effect"] = SIN_EFFECTS.get(entry["id"], {}).get("summary", "")
+            entry["level_cost"] = 10 * max(1, entry["level"])
+
+        # Routines & Habits
+        data["routines"] = [
+            {
+                **copy.deepcopy(routine),
+                "assigned": state.get("routines", {}).get(routine_id, 0),
+                "bonus": round(routine["per_point"] * state.get("routines", {}).get(routine_id, 0) * 100),
+            }
+            for routine_id, routine in ROUTINES.items()
+        ]
+
+        # Seeds
+        data["seeds"] = [
+            {
+                **copy.deepcopy(seed),
+                "held": state.get("seeds", {}).get(seed_id, 0),
+            }
+            for seed_id, seed in SEEDS.items()
+        ]
+        data["seed_bonus"] = copy.deepcopy(state.get("seed_bonus", {}))
+
+        # Gluttony food
+        gluttony_level = self._sin_level(state, "gluttony")
+        data["foods"] = [
+            {
+                **copy.deepcopy(food),
+                "stored": state.get("foods", {}).get(food_id, 0),
+                "stacks": state.get("gluttony_stacks", {}).get(food_id, 0),
+                "bonus": round(food["per_stack"] * state.get("gluttony_stacks", {}).get(food_id, 0) * gluttony_level * 100, 1),
+            }
+            for food_id, food in FOODS.items()
+        ]
+        data["gluttony_level"] = gluttony_level
+
+        # Endings recorded across every life
+        data["endings"] = [
+            {**copy.deepcopy(ending), "branches": sorted(ending["branches"]), "achieved": ending_id in state.get("endings", [])}
+            for ending_id, ending in ENDINGS.items()
+        ]
+
+        # Rank is the Your Chronicle name for the current level
+        data["rank"] = state["level"]
+
         # Prestige multipliers
         data["prestige_multipliers"] = copy.deepcopy(state.get("prestige_multipliers", {}))
+        data["active_multipliers"] = {
+            resource: round(self._multiplier(state, resource), 3)
+            for resource in ("magicules", "gold", "xp", "attack", "hp", "research")
+        }
 
         return data
 
@@ -1044,7 +1225,7 @@ class GameEngine:
                 if not action_id or action_id not in ACTIONS:
                     continue
                 action = ACTIONS[action_id]
-                interval = loop.get("interval", action.get("interval", 10))
+                interval = self.loop_interval(state, loop.get("interval", action.get("interval", 10)))
                 # last_tick defaults to when the loop started; fallback to now
                 last = loop.get("last_tick", loop.get("started_at", now))
                 next_tick = loop.get("next_tick", last + interval)
@@ -1055,7 +1236,7 @@ class GameEngine:
                     state["magicules"] += round(action.get("magicules", 0) * self._multiplier(state, "magicules"))
                     state["insight"] += action.get("insight", 0) + self._multiplier(state, "insight")
                     state["gold"] += round(action.get("gold", 0) * self._multiplier(state, "gold"))
-                    state["research"] += action.get("research", 0)
+                    state["research"] += round(action.get("research", 0) * self._multiplier(state, "research"))
                     state["hp"] = min(state.get("max_hp", 0), state.get("hp", 0) + action.get("heal", 0))
                     state["mana"] = min(state.get("max_mana", 0), state.get("mana", 0) + action.get("mana_regen", 0))
                     self._grant_xp(state, round(action.get("xp", 0) * self._multiplier(state, "xp")))
@@ -1072,17 +1253,19 @@ class GameEngine:
                 continue
 
     def _recover_focus(self, state: dict[str, Any]) -> None:
-        """Recover focus over time based on focus_recovery_seconds."""
+        """Recover focus over time, including while the browser was closed."""
         now = time.time()
-        last = state.get("_last_focus_tick", now)
-        elapsed = now - last
-        if elapsed >= 1:
-            recovery_interval = state.get("focus_recovery_seconds", 85)
-            # recover 1 focus per interval
-            recovered = int(elapsed / recovery_interval)
-            if recovered > 0:
-                state["focus"] = min(state.get("max_focus", 21), state.get("focus", 12) + recovered)
-                state["_last_focus_tick"] = now
+        last = state.get("_last_focus_tick")
+        if last is None:
+            state["_last_focus_tick"] = now
+            return
+        interval = max(1, state.get("focus_recovery_seconds", 85))
+        recovered = int((now - last) / interval)
+        if recovered <= 0:
+            return
+        # keep the remainder so partial progress toward the next point is not lost
+        state["_last_focus_tick"] = last + recovered * interval
+        state["focus"] = min(state.get("max_focus", 21), state.get("focus", 0) + recovered)
 
     def _process_cooldowns(self, state: dict[str, Any]) -> None:
         """Clean up expired instant action cooldowns."""
@@ -1139,22 +1322,47 @@ class GameEngine:
         # apply rewards per-enemy
         state["gold"] += round(enemy.get("gold", 0) * self._multiplier(state, "gold"))
         state["magicules"] += round(enemy.get("magicules", 0) * self._multiplier(state, "magicules"))
-        state["research"] += enemy.get("research", 0)
+        state["research"] += round(enemy.get("research", 0) * self._multiplier(state, "research"))
         run["earned_gold"] += enemy.get("gold", 0)
         run["earned_magicules"] += enemy.get("magicules", 0)
         run["victories"] += 1
         state["total_victories"] += 1
         self._grant_xp(state, round(enemy.get("xp", 0) * self._multiplier(state, "xp")))
+        self._drop_food(state, enemy)
+        if state.get("battle", {}).get("boss"):
+            self._drop_seed(state, enemy)
         recruited = self._try_recruit(state, enemy)
         if recruited:
             run["recruited"].append(recruited)
         self._log(state, f"Victory: +{enemy.get('xp',0)} XP, +{enemy.get('gold',0)} gold, +{enemy.get('magicules',0)} Magicules, +{enemy.get('research',0)} Research.", "victory")
 
+    def _drop_food(self, state: dict[str, Any], enemy: dict[str, Any]) -> None:
+        """Defeated creatures leave food behind; Gluttony devours it immediately."""
+        food_id = food_for_enemy(enemy.get("name", ""))
+        if not food_id:
+            return
+        food = FOODS[food_id]
+        if self._sin_level(state, "gluttony"):
+            stacks = state.setdefault("gluttony_stacks", {})
+            stacks[food_id] = stacks.get(food_id, 0) + 1
+            self._log(state, f"Gluttony devours {food['name']} — {stacks[food_id]} stacks held.", "growth")
+            return
+        foods = state.setdefault("foods", {})
+        foods[food_id] = foods.get(food_id, 0) + 1
+        self._log(state, f"{food['name']} is stored away. Awaken Gluttony to devour it.", "system")
+
+    def _drop_seed(self, state: dict[str, Any], enemy: dict[str, Any]) -> None:
+        """Expedition bosses always yield a seed for permanent stat growth."""
+        seed_id = seed_for_boss(enemy.get("name", ""))
+        seeds = state.setdefault("seeds", {})
+        seeds[seed_id] = seeds.get(seed_id, 0) + 1
+        self._log(state, f"BOSS DROP — {SEEDS[seed_id]['name']} harvested from {enemy.get('name', 'the boss')}.", "victory")
+
     def _try_recruit(self, state: dict[str, Any], battle: dict[str, Any]) -> str | None:
         ally_id = battle.get("ally_id")
         if not ally_id or ally_id in state["allies"]:
             return None
-        chance = recruitment_chance(battle["strength"])
+        chance = min(0.99, recruitment_chance(battle["strength"]) + SIN_EFFECTS["lust"]["per_level"] * self._sin_level(state, "lust"))
         if self.rng.random() > chance:
             self._log(state, f"{battle['name']} retreats. Ally chance was {round(chance * 100)}%.", "system")
             return None
@@ -1338,8 +1546,9 @@ class GameEngine:
                 continue
             base = ALLIES[ally_id]
             level = state["allies"][ally_id]["level"]
-            attack += max(1, (base["attack"] + level - 1) // 2)
-            defense += max(0, (base["defense"] + (level - 1) // 2) // 2)
+            seeds = state.get("ally_seeds", {}).get(ally_id, {})
+            attack += max(1, (base["attack"] + level - 1) // 2) + seeds.get("attack", 0)
+            defense += max(0, (base["defense"] + (level - 1) // 2) // 2) + seeds.get("defense", 0)
         # passive party members grant half bonuses
         for ally_id in state.get("passive_party", []):
             if ally_id not in state["allies"]:
@@ -1349,6 +1558,86 @@ class GameEngine:
             attack += max(0, (base["attack"] + level - 1) // 4)
             defense += max(0, (base["defense"] + (level - 1) // 2) // 4)
         return attack, defense
+
+    def _sync_hp_multiplier(self, state: dict[str, Any]) -> None:
+        """Fold the Max HP multiplier into the stat without compounding it."""
+        applied = state.get("_hp_mult_bonus", 0)
+        raw = state.get("max_hp", 0) - applied
+        wanted = round(raw * self._multiplier(state, "hp")) - raw
+        if wanted == applied:
+            return
+        state["max_hp"] = raw + wanted
+        state["_hp_mult_bonus"] = wanted
+        state["hp"] = min(state["max_hp"], max(1, state.get("hp", 1) + (wanted - applied)))
+
+    def _apply_seed_bonus(self, state: dict[str, Any]) -> None:
+        """Re-apply permanent seed growth after a reset rebuilds the base stats."""
+        for stat, amount in state.get("seed_bonus", {}).items():
+            if not amount:
+                continue
+            state[stat] = state.get(stat, 0) + amount
+        state["hp"] = state["max_hp"]
+        state["mana"] = state["max_mana"]
+
+    def _record_ending(self, state: dict[str, Any]) -> str:
+        """Write the ending this life earned, based on the branches chosen."""
+        chosen = list(state.get("branches", {}).values())
+        best_id = "wanderer"
+        best_score = 0
+        for ending_id, ending in ENDINGS.items():
+            score = sum(1 for branch in chosen if branch in ending["branches"])
+            if score > best_score:
+                best_id, best_score = ending_id, score
+        ending = ENDINGS[best_id]
+        endings = state.setdefault("endings", [])
+        if best_id in endings:
+            self._log(state, f"ENDING — {ending['name']} is written again in the chronicle.", "story")
+            return best_id
+        endings.append(best_id)
+        reward = ending.get("reward", {})
+        state["inspiration"] = state.get("inspiration", 0) + reward.get("inspiration", 0)
+        self._log(
+            state,
+            f"NEW ENDING — {ending['name']}: {ending['description']} (+{reward.get('inspiration', 0)} Inspiration)",
+            "story",
+        )
+        return best_id
+
+    @staticmethod
+    def _sin_level(state: dict[str, Any], sin_id: str) -> int:
+        return state.get("sins", {}).get(sin_id, {}).get("level", 0)
+
+    def _habit_multiplier(self, state: dict[str, Any], resource: str) -> float:
+        points = 0.0
+        for routine_id, assigned in state.get("routines", {}).items():
+            routine = ROUTINES.get(routine_id)
+            if routine and routine["resource"] == resource:
+                points += routine["per_point"] * assigned
+        return 1 + points
+
+    def _food_multiplier(self, state: dict[str, Any], resource: str) -> float:
+        gluttony = self._sin_level(state, "gluttony")
+        if not gluttony:
+            return 1.0
+        bonus = 0.0
+        for food_id, stacks in state.get("gluttony_stacks", {}).items():
+            food = FOODS.get(food_id)
+            if food and food["stat"] == resource:
+                bonus += food["per_stack"] * stacks * gluttony
+        return 1 + bonus
+
+    def _sin_multiplier(self, state: dict[str, Any], resource: str) -> float:
+        bonus = 0.0
+        for sin_id, effect in SIN_EFFECTS.items():
+            if effect["kind"] != "multiplier" or effect.get("resource") != resource:
+                continue
+            bonus += effect["per_level"] * self._sin_level(state, sin_id)
+        return 1 + bonus
+
+    def loop_interval(self, state: dict[str, Any], interval: float) -> float:
+        """Sloth makes background loops tick faster, up to 60% faster."""
+        speed = min(0.6, SIN_EFFECTS["sloth"]["per_level"] * self._sin_level(state, "sloth"))
+        return max(1.0, interval * (1 - speed))
 
     def _multiplier(self, state: dict[str, Any], resource: str) -> float:
         """Get the prestige multiplier for a resource."""
@@ -1365,7 +1654,10 @@ class GameEngine:
             mult *= 1 + ASTRAL_UPGRADES["unbreakable_slime"]["per_level"] * astral["unbreakable_slime"]
         if resource == "insight" and "eternal_insight" in astral:
             mult += ASTRAL_UPGRADES["eternal_insight"]["per_level"] * astral["eternal_insight"]
-        return mult
+        if resource == "insight":
+            # Insight is a flat bonus rather than a multiplier.
+            return mult
+        return mult * self._habit_multiplier(state, resource) * self._sin_multiplier(state, resource) * self._food_multiplier(state, resource)
 
     def _has_astral(self, state: dict[str, Any], upgrade_id: str) -> bool:
         return state.get("astral_upgrades", {}).get(upgrade_id, 0) > 0

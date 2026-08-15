@@ -53,6 +53,11 @@ const escapeHtml = (value) =>
     .replaceAll('"', AMP + "quot;")
     .replaceAll("'", AMP + "#039;");
 
+const titleCase = (value) =>
+  String(value ?? "")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
 const clampPercent = (value, maximum) =>
   Math.max(0, Math.min(100, maximum ? (value / maximum) * 100 : 0));
 
@@ -333,7 +338,9 @@ function renderGame() {
             ${tabButton("next", "Next")}
             ${tabButton("research", "Research")}
             ${tabButton("prestige", "Prestige")}
+            ${tabButton("routines", "Routines")}
             ${tabButton("sins", "Sins")}
+            ${tabButton("feast", "Feast")}
             ${tabButton("combat", "Combat")}
             ${tabButton("story", "Story")}
           </nav>
@@ -364,7 +371,9 @@ function renderTabContent() {
     case "next": return renderNextTab();
     case "research": return renderResearchTab();
     case "prestige": return renderPrestigeTab();
+    case "routines": return renderRoutinesTab();
     case "sins": return renderSinsTab();
+    case "feast": return renderFeastTab();
     case "combat": return renderCombatTab();
     case "story": return renderStoryTab();
     default: return renderActionsTab();
@@ -497,11 +506,11 @@ function renderUpgradesTab() {
 }
 
 function upgradeRow(action) {
-  const costParts = Object.entries(action.cost || {}).map(([res, cost]) => `${cost} ${res.replace('_', ' ').title()}`);
+  const costParts = Object.entries(action.cost || {}).map(([res, cost]) => `${cost} ${titleCase(res)}`);
   const effectParts = Object.entries(action.effect || {}).map(([stat, amount]) => {
     if (stat === "party_slots") return `+${amount} Party Slot`;
     if (stat === "passive_slots") return `+${amount} Passive Slot`;
-    return `+${amount} ${stat.replace('_', ' ').title()}`;
+    return `+${amount} ${titleCase(stat)}`;
   });
   const canAfford = Object.entries(action.cost || {}).every(([res, cost]) => (state[res] || 0) >= cost);
   return `
@@ -549,7 +558,7 @@ function renderNextTab() {
 }
 
 function nextRow(action) {
-  const costParts = Object.entries(action.cost || {}).map(([res, cost]) => `${cost} ${res.replace('_', ' ').title()}`);
+  const costParts = Object.entries(action.cost || {}).map(([res, cost]) => `${cost} ${titleCase(res)}`);
   return `
     <article class="action-item next-item ${action.completed ? "completed" : ""}">
       <div class="action-art">${svgForNext(action.id)}</div>
@@ -701,7 +710,7 @@ function svgForAstral(id) {
 }
 
 function reincarnationRow(id, cls) {
-  const bonusParts = Object.entries(cls.base_bonus || {}).map(([stat, amount]) => `+${amount} ${stat.replace('_', ' ').title()}`);
+  const bonusParts = Object.entries(cls.base_bonus || {}).map(([stat, amount]) => `+${amount} ${titleCase(stat)}`);
   return `
     <article class="action-item reincarnation-item">
       <div class="action-art">${svgForReincarnation(id)}</div>
@@ -732,6 +741,136 @@ function svgForReincarnation(id) {
   return icons[id] || icons.default;
 }
 
+function renderRoutinesTab() {
+  const routines = state.routines || [];
+  const seeds = state.seeds || [];
+  const allies = (state.party || []).filter((ally) => ally.recruited !== false);
+  const seedBonus = state.seed_bonus || {};
+  const bonusParts = Object.entries(seedBonus)
+    .filter(([, amount]) => amount)
+    .map(([stat, amount]) => `+${amount} ${titleCase(stat)}`);
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Routines ${AMP}amp; Habits</h3><span>${state.habit_points} Habit Points free</span></div>
+      <p class="tab-hint">Assign the Habit Points earned from the Dark Ritual to daily routines. Their multipliers persist through every reset.</p>
+      <div class="action-list">
+        ${routines.map(routineRow).join("")}
+      </div>
+    </section>
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Seeds</h3><span>${bonusParts.join(" · ") || "No seeds eaten yet"}</span></div>
+      <p class="tab-hint">Expedition bosses drop seeds. Feed them to Rimuru or an ally for permanent base stats.</p>
+      <div class="action-list">
+        ${seeds.map((seed) => seedRow(seed, allies)).join("")}
+      </div>
+    </section>`;
+}
+
+function routineRow(routine) {
+  return `
+    <article class="action-item routine-item">
+      <div class="action-art">${svgForLoop("worship")}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(routine.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${routine.assigned} Habit Points</span><span class="action-reward">+${routine.bonus}%</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(routine.description)}</p>
+        <div class="action-footer">
+          <div class="action-controls">
+            <button class="action-button" data-habit-assign="${escapeHtml(routine.id)}" ${state.habit_points < 1 ? "disabled" : ""}>Assign</button>
+            <button class="action-button" data-habit-unassign="${escapeHtml(routine.id)}" ${routine.assigned < 1 ? "disabled" : ""}>Remove</button>
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function seedRow(seed, allies) {
+  const heroParts = Object.entries(seed.hero || {}).map(([stat, amount]) => `+${amount} ${titleCase(stat)}`);
+  const options = allies
+    .map((ally) => `<option value="${escapeHtml(ally.id)}">${escapeHtml(ally.name)}</option>`)
+    .join("");
+  return `
+    <article class="action-item seed-item">
+      <div class="action-art">${svgForAstral("soul_amplifier")}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(seed.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${seed.held} held</span><span class="action-reward">${heroParts.join(" · ")}</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(seed.description)}</p>
+        <div class="action-footer">
+          <div class="action-controls">
+            <select class="seed-target" data-seed-target="${escapeHtml(seed.id)}">
+              <option value="hero">Rimuru</option>
+              ${options}
+            </select>
+            <button class="action-button" data-seed-feed="${escapeHtml(seed.id)}" ${seed.held < 1 ? "disabled" : ""}>Feed</button>
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function renderFeastTab() {
+  const foods = state.foods || [];
+  const gluttony = state.gluttony_level || 0;
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Predator ${AMP}amp; Gluttony</h3><span>${gluttony ? `Gluttony Lv. ${gluttony}` : "Gluttony sealed"}</span></div>
+      <p class="tab-hint">${gluttony
+        ? "Gluttony devours every food drop the moment it falls. Each stack scales with your Gluttony level."
+        : "Defeated creatures leave food behind, but it just sits in storage. Awaken Gluttony in the Sins tab to devour it."}</p>
+      <div class="action-list">
+        ${foods.map(foodRow).join("")}
+      </div>
+    </section>
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Endings</h3><span>${(state.endings || []).filter((ending) => ending.achieved).length} recorded</span></div>
+      <p class="tab-hint">Your choices decide how each life is remembered. Reincarnate and choose differently to record every ending.</p>
+      <div class="action-list">
+        ${(state.endings || []).map(endingRow).join("")}
+      </div>
+    </section>`;
+}
+
+function foodRow(food) {
+  return `
+    <article class="action-item food-item">
+      <div class="action-art">${svgForSin("gluttony")}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(food.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${food.stored} stored · ${food.stacks} devoured</span><span class="action-reward">+${food.bonus}% ${titleCase(food.stat)}</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(food.description)}</p>
+        <div class="action-footer">
+          <div class="action-controls">
+            <button class="action-button" data-food="${escapeHtml(food.id)}" ${food.stored < 1 || !state.gluttony_level ? "disabled" : ""}>Devour</button>
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function endingRow(ending) {
+  return `
+    <article class="action-item ending-item ${ending.achieved ? "completed" : ""}">
+      <div class="action-art">${svgForAstral("eternal_insight")}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(ending.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${ending.achieved ? "Recorded" : "Unwritten"}</span></div>
+        </div>
+        <p class="action-desc">${ending.achieved ? escapeHtml(ending.description) : "Follow a different path through the story to reach this ending."}</p>
+        <div class="action-footer">
+          <span class="action-reward">${ending.branches.length ? escapeHtml(ending.branches.join(" · ")) : "Choose nothing memorable"}</span>
+        </div>
+      </div>
+    </article>`;
+}
+
 function renderSinsTab() {
   const sins = state.sins || [];
   return `
@@ -751,7 +890,7 @@ function sinRow(sin) {
       <div class="action-content">
         <div class="action-header">
           <strong>${escapeHtml(sin.name)}</strong>
-          <div class="action-meta"><span class="action-cost">${sin.unlocked ? `Level ${sin.level}` : `Unlocks Lv. ${sin.unlock_level}`}</span></div>
+          <div class="action-meta"><span class="action-cost">${sin.unlocked ? `Level ${sin.level}` : `Unlocks Lv. ${sin.unlock_level}`}</span><span class="action-reward">${escapeHtml(sin.effect || "")}</span></div>
         </div>
         <p class="action-desc">${escapeHtml(sin.description)}</p>
         <div class="action-footer">
@@ -1084,6 +1223,22 @@ function bindGameEvents() {
   );
   app.querySelectorAll("[data-sin-level]").forEach((btn) =>
     btn.addEventListener("click", () => mutate("/api/sin/level", { sin: btn.dataset.sinLevel }))
+  );
+  app.querySelectorAll("[data-habit-assign]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/habit/assign", { routine: btn.dataset.habitAssign, points: 1 }))
+  );
+  app.querySelectorAll("[data-habit-unassign]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/habit/unassign", { routine: btn.dataset.habitUnassign, points: 1 }))
+  );
+  app.querySelectorAll("[data-seed-feed]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const seed = btn.dataset.seedFeed;
+      const select = app.querySelector(`[data-seed-target="${seed}"]`);
+      mutate("/api/seed/feed", { seed, target: select ? select.value : "hero" });
+    })
+  );
+  app.querySelectorAll("[data-food]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/food/consume", { food: btn.dataset.food, count: 1 }))
   );
 }
 
