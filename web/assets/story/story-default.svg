@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Story default icon">
+  <rect width="128" height="128" rx="18" fill="#0d1416"/>
+  <rect x="24" y="24" width="80" height="80" rx="16" fill="#14222d" stroke="#7fe5d4" stroke-width="3"/>
+  <path d="M38 46h52M38 64h44M38 82h34" stroke="#7fe5d4" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="86" cy="82" r="10" fill="#7fe5d4" opacity="0.8"/>
+</svg>

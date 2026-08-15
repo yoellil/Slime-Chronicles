@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Magicule circulation icon">
+  <rect width="128" height="128" rx="22" fill="#0d1618"/>
+  <circle cx="64" cy="64" r="34" fill="#112a2d" stroke="#8fe7d3" stroke-width="3"/>
+  <path d="M64 25v18M64 85v18M25 64h18M85 64h18" stroke="#8fe7d3" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="64" cy="64" r="11" fill="#8fe7d3" opacity="0.95"/>
+  <path d="M42 42l12 12M86 86l12 12M42 86l12-12M86 42l12-12" stroke="#c8fff1" stroke-width="4" stroke-linecap="round" opacity="0.7"/>
+</svg>

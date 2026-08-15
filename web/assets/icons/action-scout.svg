@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Silent scout icon">
+  <rect width="128" height="128" rx="22" fill="#0b1415"/>
+  <circle cx="64" cy="64" r="30" fill="#1b2d2b" stroke="#8de0d0" stroke-width="3"/>
+  <path d="M64 26c-20 0-36 16-36 38s16 38 36 38 36-16 36-38-16-38-36-38Z" fill="#172a2a" stroke="#8de0d0" stroke-width="3"/>
+  <circle cx="64" cy="64" r="9" fill="#8de0d0"/>
+  <path d="M64 18v18M64 110v18M18 64h18M92 64h18" stroke="#8de0d0" stroke-width="4" stroke-linecap="round" opacity="0.8"/>
+</svg>

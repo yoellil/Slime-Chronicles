@@ -57,6 +57,7 @@ class GameEngine:
             "speed": base["speed"],
             "gold": 0,
             "magicules": 0,
+            "research": 0,
             "insight": 0,
             "training": {"attack": 0, "mana": 0},
             "activity": None,
@@ -68,6 +69,7 @@ class GameEngine:
             "zone_runs": {zone_id: 0 for zone_id in ZONES},
             "dungeon_run": None,
             "battle": None,
+            "loops": {},
             "allies": {},
             "active_party": [],
             "friendships": {},
@@ -101,6 +103,8 @@ class GameEngine:
         activity = state.get("activity")
         if activity and time.time() >= activity["ends_at"]:
             self._complete_activity(state)
+        # process any running loop actions
+        self._process_loops(state)
         self._check_story_progress(state)
         return self.public_state(state)
 
@@ -209,8 +213,12 @@ class GameEngine:
         state["mana"] -= skill["mana"]
 
         enemies = battle["enemies"]
+        # event queue for UI playback
+        events: list[dict] = []
+
         # resolve target choice
         chosen = None
+        chosen_idx = None
         if target is not None:
             try:
                 idx = int(target)
@@ -220,20 +228,25 @@ class GameEngine:
                 if cand["hp"] <= 0:
                     raise GameError("That target is already defeated.")
                 chosen = cand
+                chosen_idx = idx
             except ValueError:
                 chosen = next((e for e in enemies if e["name"] == str(target) and e["hp"] > 0), None)
                 if not chosen:
                     raise GameError("Invalid target specified.")
+                chosen_idx = enemies.index(chosen)
             except IndexError:
                 raise GameError("Target index out of range.")
         else:
             chosen = next((e for e in enemies if e["hp"] > 0), None)
+            chosen_idx = enemies.index(chosen) if chosen else None
         if not chosen:
             raise GameError("No hostile target remains.")
 
+        # compute damage
+        hp_before = chosen["hp"]
         execute = skill.get("execute")
-        if execute and chosen["hp"] / chosen["max_hp"] <= execute:
-            damage = chosen["hp"]
+        if execute and hp_before / chosen["max_hp"] <= execute:
+            damage = hp_before
             state["magicules"] += 4
             verb = "devoured"
         else:
@@ -242,12 +255,44 @@ class GameEngine:
             variance = self.rng.randint(0, max(1, state["level"] // 3 + 1))
             damage = max(1, round((state["attack"] + party_attack) * skill["power"] + variance - effective_defense))
             verb = "hit"
-        chosen["hp"] = max(0, chosen["hp"] - damage)
+        hp_after = max(0, hp_before - damage)
+        chosen["hp"] = hp_after
+
+        # create skill event
+        events.append({
+            "id": f"evt-{int(time.time() * 1000)}-{self.rng.randint(0,9999)}",
+            "type": "skill",
+            "actor": "player",
+            "skill": skill["id"],
+            "target": chosen_idx,
+            "damage": damage,
+            "hp_before": hp_before,
+            "hp_after": hp_after,
+        })
+
         self._log(state, f"{skill['name']} {verb} {chosen['name']} for {damage} damage.", "combat")
 
         if chosen["hp"] <= 0:
             # handle per-enemy victory (xp, gold, magicules, recruitment)
+            run = state.get("dungeon_run")
+            recruited_before = len(run.get("recruited", [])) if run else 0
             self._win_enemy(state, chosen)
+            recruited_after = len(run.get("recruited", [])) if run else 0
+            # victory event
+            events.append({
+                "id": f"evt-{int(time.time() * 1000)}-{self.rng.randint(0,9999)}",
+                "type": "defeat",
+                "target": chosen_idx,
+                "name": chosen.get("name"),
+            })
+            # recruitment event if occurred
+            if recruited_after > recruited_before:
+                recruited_id = run["recruited"][-1]
+                events.append({
+                    "id": f"evt-{int(time.time() * 1000)}-{self.rng.randint(0,9999)}",
+                    "type": "recruit",
+                    "ally_id": recruited_id,
+                })
             # if no alive enemies remain in this encounter, advance the run
             if not any(e["hp"] > 0 for e in enemies):
                 run = state["dungeon_run"]
@@ -256,26 +301,47 @@ class GameEngine:
                     state["zone_runs"][zone_id] += 1
                     state["total_runs"] += 1
                     self._log(state, f"EXPEDITION COMPLETE — {run['zone_name']} cleared through all {run['total']} encounters.", "story")
+                    events.append({"id": f"evt-{int(time.time() * 1000)}-{self.rng.randint(0,9999)}", "type": "expedition_complete", "zone": run["zone_name"]})
                     state["dungeon_run"] = None
                     state["battle"] = None
                     self._check_story_progress(state)
+                    # attach events to a transient field on state so public_state can include them
+                    if state.get("battle") is None:
+                        state.setdefault("last_battle_events", []).extend(events)
+                    else:
+                        state["battle"].setdefault("events", []).extend(events)
                     return self.public_state(state)
                 # advance to next encounter
                 run["encounter"] += 1
                 state["hp"] = min(state["max_hp"], state["hp"] + max(3, state["max_hp"] // 5))
                 state["mana"] = min(state["max_mana"], state["mana"] + max(2, state["max_mana"] // 6))
+                events.append({"id": f"evt-{int(time.time() * 1000)}-{self.rng.randint(0,9999)}", "type": "encounter_advance", "next": run["encounter"]})
                 self._spawn_encounter(state)
+                state["battle"].setdefault("events", []).extend(events)
                 return self.public_state(state)
 
         # enemy retaliates (first alive enemy attacks)
         attacker = next((e for e in enemies if e["hp"] > 0), None)
         if attacker:
+            attacker_idx = enemies.index(attacker)
             _, party_defense = self._party_bonuses(state)
             enemy_damage = max(1, attacker["attack"] + self.rng.randint(0, 2) - state["defense"] - party_defense)
+            player_hp_before = state["hp"]
             state["hp"] = max(0, state["hp"] - enemy_damage)
+            player_hp_after = state["hp"]
             # advance encounter-wide turn counter
             battle["turn"] = battle.get("turn", 1) + 1
             self._log(state, f"{attacker['name']} retaliates for {enemy_damage} damage.", "danger")
+            # enemy attack event
+            events.append({
+                "id": f"evt-{int(time.time() * 1000)}-{self.rng.randint(0,9999)}",
+                "type": "attack",
+                "actor": "enemy",
+                "enemy_index": attacker_idx,
+                "damage": enemy_damage,
+                "player_hp_before": player_hp_before,
+                "player_hp_after": player_hp_after,
+            })
             if state["hp"] <= 0:
                 run_name = state["dungeon_run"]["zone_name"]
                 state["battle"] = None
@@ -283,6 +349,9 @@ class GameEngine:
                 state["hp"] = max(1, state["max_hp"] // 2)
                 state["mana"] = max(0, state["max_mana"] // 2)
                 self._log(state, f"The {run_name} expedition failed. You escape with half vitality.", "danger")
+                events.append({"id": f"evt-{int(time.time() * 1000)}-{self.rng.randint(0,9999)}", "type": "expedition_failed", "zone": run_name})
+        # attach events to battle for client playback
+        battle.setdefault("events", []).extend(events)
         return self.public_state(state)
 
     def abandon_dungeon(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -526,6 +595,49 @@ class GameEngine:
                         self._log(state, f"Queued action could not start: {str(e)}", "system")
             except Exception:
                 pass
+
+    def _process_loops(self, state: dict[str, Any]) -> None:
+        """Process any active background loop actions and grant their periodic rewards.
+
+        Loops are stored in state['loops'] as a mapping of loop_id -> loop data. Each active
+        loop grants the base action's rewards every `interval` seconds. To avoid long
+        processing on stale resumes, at most 10 ticks are processed per refresh.
+        """
+        loops = state.get("loops", {}) or {}
+        if not loops:
+            return
+        now = time.time()
+        for lid, loop in list(loops.items()):
+            try:
+                if not loop.get("active"):
+                    continue
+                action_id = loop.get("action_id")
+                if not action_id or action_id not in ACTIONS:
+                    continue
+                action = ACTIONS[action_id]
+                interval = loop.get("interval", action.get("duration", 6))
+                # last_tick defaults to when the loop started; fallback to now
+                last = loop.get("last_tick", loop.get("started_at", now))
+                next_tick = loop.get("next_tick", last + interval)
+                ticks = 0
+                # grant up to 10 missed ticks to prevent long stalls
+                while now >= next_tick and ticks < 10:
+                    # apply periodic rewards (light version of completing the action)
+                    state["magicules"] += action.get("magicules", 0)
+                    state["insight"] += action.get("insight", 0)
+                    state["hp"] = min(state.get("max_hp", 0), state.get("hp", 0) + action.get("heal", 0))
+                    self._grant_xp(state, action.get("xp", 0))
+                    # record a passive completion count so story unlocks still see progress
+                    state.setdefault("action_counts", {})[action_id] = state.setdefault("action_counts", {}).get(action_id, 0) + 1
+                    self._log(state, f"Auto: {action['name']} produced +{action.get('magicules',0)} Magicules.", "action")
+                    ticks += 1
+                    last = next_tick
+                    next_tick += interval
+                loop["last_tick"] = last
+                loop["next_tick"] = next_tick
+            except Exception:
+                # avoid any loop processing error from blocking the rest of the refresh
+                continue
 
     def _spawn_encounter(self, state: dict[str, Any]) -> None:
         run = state["dungeon_run"]

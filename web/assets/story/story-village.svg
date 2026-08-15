@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Village story icon">
+  <rect width="128" height="128" rx="18" fill="#0d1410"/>
+  <path d="M20 90h88v18H20z" fill="#1a2d24"/>
+  <path d="M34 90V56l28-24 28 24v34" fill="#20372d" stroke="#8fe7d3" stroke-width="3"/>
+  <path d="M48 90V68h32v22" fill="#8fe7d3" opacity="0.18"/>
+  <path d="M60 43h8v12h-8z" fill="#8fe7d3" opacity="0.8"/>
+</svg>

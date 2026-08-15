@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Analyze moss icon">
+  <rect width="128" height="128" rx="22" fill="#0d1320"/>
+  <circle cx="64" cy="64" r="34" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/>
+  <path d="M40 66c8-20 20-30 34-30 15 0 26 8 34 24-6 4-10 7-15 10-9-8-18-11-30-10-7 1-14 4-23 6Z" fill="#67a6ff" opacity="0.8"/>
+  <path d="M44 74c10-7 20-10 32-8 9 1 17 5 25 12" stroke="#dce9ff" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <circle cx="46" cy="72" r="5" fill="#dce9ff"/>
+  <path d="M78 38l15 27M85 38l19 13M68 45l18 23" stroke="#dce9ff" stroke-width="4" stroke-linecap="round" opacity="0.7"/>
+</svg>

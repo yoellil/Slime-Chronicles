@@ -7,40 +7,6 @@ let autoTimer = null;
 let refreshTimer = null;
 // currently selected enemy index (0-based) in multi-enemy encounters
 let selectedEnemyIndex = null;
-// animation frame id for a smooth action progress bar
-let activityAnimId = null;
-
-// Animate the progress bar smoothly based on activity.started_at and activity.ends_at
-function animateActivityProgress() {
-  // cancel previous animation if any
-  if (activityAnimId) {
-    cancelAnimationFrame(activityAnimId);
-    activityAnimId = null;
-  }
-  if (!state || !state.activity) return;
-  const span = document.querySelector('.meter.progress > span');
-  if (!span) return;
-  const startsAt = state.activity.started_at * 1000; // convert to ms
-  const endsAt = state.activity.ends_at * 1000;
-  const duration = Math.max(1, endsAt - startsAt);
-
-  function frame() {
-    const now = Date.now();
-    const elapsed = Math.max(0, Math.min(duration, now - startsAt));
-    const pct = Math.round((elapsed / duration) * 100);
-    span.style.setProperty('--value', pct + '%');
-    // continue until the endsAt has passed
-    if (now < endsAt) {
-      activityAnimId = requestAnimationFrame(frame);
-    } else {
-      // ensure final state reached
-      span.style.setProperty('--value', '100%');
-      activityAnimId = null;
-    }
-  }
-  // start the animation loop
-  activityAnimId = requestAnimationFrame(frame);
-}
 
 
 const escapeHtml = (value) =>
@@ -99,90 +65,6 @@ function render() {
   document.body.classList.toggle("route-rimuru", state.character === "rimuru");
   renderGame();
   if (state.pending_choice) renderChoice();
-  // start or refresh the smooth activity progress animator so the bar moves continuously
-  animateActivityProgress();
-  // play any battle events received from the server (one-time playback)
-  if (state?.battle?.events && state.battle.events.length) {
-    playBattleEvents(state.battle.events);
-    // mark events as played locally so they are not replayed on re-render
-    state.battle._played = (state.battle._played || new Set());
-    state.battle.events.forEach(e => state.battle._played.add(e.id));
-    // clear events array in the in-memory state so future renders don't re-run animation
-    state.battle.events = [];
-  }
-}
-
-// keep a global set of played event ids to avoid double-playing after state refreshes
-const _playedBattleEventIds = new Set();
-
-function playBattleEvents(events) {
-  if (!Array.isArray(events) || !events.length) return;
-  events.forEach((evt, i) => {
-    if (!evt || !evt.id || _playedBattleEventIds.has(evt.id)) return;
-    // schedule each event with a slight delay for readable playback
-    setTimeout(() => {
-      _playedBattleEventIds.add(evt.id);
-      switch (evt.type) {
-        case 'skill':
-          showDamagePopup(evt.target, '-' + evt.damage);
-          break;
-        case 'attack':
-          // enemy attack shows damage on player (use profile orb)
-          showDamagePopup(null, '-' + evt.damage, true);
-          break;
-        case 'defeat':
-          showPopupText(evt.target, (evt.name || 'Enemy') + ' defeated');
-          break;
-        case 'recruit':
-          showPopupText(null, 'Ally recruited: ' + evt.ally_id);
-          break;
-        case 'expedition_complete':
-          showPopupText(null, 'Expedition complete — ' + evt.zone);
-          break;
-        case 'encounter_advance':
-          showPopupText(null, 'Next encounter: ' + evt.next);
-          break;
-        case 'expedition_failed':
-          showPopupText(null, 'Expedition failed — ' + evt.zone);
-          break;
-        default:
-          // ignore unknown events for now
-          break;
-      }
-    }, i * 220);
-  });
-}
-
-function showPopupText(targetIndex, text, isPlayer) {
-  const container = isPlayer ? document.querySelector('.profile-orb') : (document.querySelector(`.enemy-list-item[data-target="${targetIndex}"]`) || document.querySelector('.enemy-sigil'));
-  if (!container) return;
-  const el = document.createElement('div');
-  el.className = 'damage-pop';
-  el.textContent = text;
-  // position centrally within container
-  el.style.left = '50%';
-  el.style.top = '10%';
-  el.style.transform = 'translateX(-50%)';
-  container.style.position = container.style.position || 'relative';
-  container.appendChild(el);
-  setTimeout(() => el.remove(), 1100);
-}
-
-function showDamagePopup(targetIndex, text, isPlayer) {
-  const container = isPlayer ? document.querySelector('.profile-orb') : (document.querySelector(`.enemy-list-item[data-target="${targetIndex}"]`) || document.querySelector('.enemy-sigil'));
-  if (!container) return;
-  const rect = container.getBoundingClientRect();
-  const rootRect = document.documentElement.getBoundingClientRect();
-  const el = document.createElement('div');
-  el.className = 'damage-pop';
-  el.textContent = text;
-  // absolute-position relative to container
-  container.style.position = container.style.position || 'relative';
-  el.style.left = '50%';
-  el.style.top = '20%';
-  el.style.transform = 'translateX(-50%)';
-  container.appendChild(el);
-  setTimeout(() => el.remove(), 1100);
 }
 
 function renderLanding() {
@@ -321,37 +203,6 @@ function bar(label, value, max, type) {
   return `<div><div class="bar-label"><span>${escapeHtml(label)}</span><b>${value} / ${max}</b></div>${meter(value, max, type, label)}</div>`;
 }
 
-function svgForAction(id) {
-  const icons = {
-    gather_dew: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gather dew"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="36" fill="#132a2c" stroke="#5dd9c7" stroke-width="3" opacity="0.8"/><path d="M64 24c-18 21-28 34-28 48 0 16 12 28 28 28s28-12 28-28c0-14-10-27-28-48Z" fill="#8ff2df"/><path d="M64 38c-8 13-16 22-16 29 0 9 7 16 16 16s16-7 16-16c0-7-8-16-16-29Z" fill="#dffdf6" opacity="0.42"/><path d="M52 88c7 5 13 8 12 17M76 88c-7 6-13 9-12 17" stroke="#9cf7e6" stroke-width="5" stroke-linecap="round" opacity="0.8"/></svg>',
-    analyze_moss: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Analyze moss"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="34" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M40 66c8-20 20-30 34-30 15 0 26 8 34 24-6 4-10 7-15 10-9-8-18-11-30-10-7 1-14 4-23 6Z" fill="#67a6ff" opacity="0.8"/><path d="M44 74c10-7 20-10 32-8 9 1 17 5 25 12" stroke="#dce9ff" stroke-width="5" stroke-linecap="round" fill="none"/><circle cx="46" cy="72" r="5" fill="#dce9ff"/><path d="M78 38l15 27M85 38l19 13M68 45l18 23" stroke="#dce9ff" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
-    shape_body: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Shape body"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="52" r="22" fill="#f1c574"/><path d="M34 95c8-20 24-30 30-30s22 10 30 30" fill="#f1c574" opacity="0.9"/><path d="M54 36c6-13 18-18 30-14" stroke="#ffd994" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.8"/><path d="M36 54c8-15 18-21 28-23" stroke="#ffd994" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.5"/><path d="M92 54c-8-15-18-21-28-23" stroke="#ffd994" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.5"/></svg>',
-    silent_scout: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Silent scout"><rect width="128" height="128" rx="22" fill="#0b1415"/><circle cx="64" cy="64" r="30" fill="#1b2d2b" stroke="#8de0d0" stroke-width="3"/><path d="M64 26c-20 0-36 16-36 38s16 38 36 38 36-16 36-38-16-38-36-38Z" fill="#172a2a" stroke="#8de0d0" stroke-width="3"/><circle cx="64" cy="64" r="9" fill="#8de0d0"/><path d="M64 18v18M64 110v18M18 64h18M92 64h18" stroke="#8de0d0" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
-    talk_goblins: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Talk to goblins"><rect width="128" height="128" rx="22" fill="#171612"/><path d="M28 38h52c12 0 22 10 22 22v15c0 12-10 22-22 22H58l-16 14v-14H28c-12 0-22-10-22-22V60c0-12 10-22 22-22Z" fill="#f5d081" opacity="0.15" stroke="#f5d081" stroke-width="4"/><path d="M40 58h32M40 74h22" stroke="#f5d081" stroke-width="5" stroke-linecap="round"/><circle cx="96" cy="52" r="18" fill="#f5d081" opacity="0.8"/><path d="M89 49l7 7 14-15" stroke="#171612" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    magicule_circulation: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Magicule circulation"><rect width="128" height="128" rx="22" fill="#0d1618"/><circle cx="64" cy="64" r="34" fill="#112a2d" stroke="#8fe7d3" stroke-width="3"/><path d="M64 25v18M64 85v18M25 64h18M85 64h18" stroke="#8fe7d3" stroke-width="5" stroke-linecap="round"/><circle cx="64" cy="64" r="11" fill="#8fe7d3" opacity="0.95"/><path d="M42 42l12 12M86 86l12 12M42 86l12-12M86 42l12-12" stroke="#c8fff1" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
-    train_allies: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Train allies"><rect width="128" height="128" rx="22" fill="#17140f"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#f0c974" opacity="0.18" stroke="#f0c974" stroke-width="4"/><circle cx="46" cy="54" r="12" fill="#f0c974"/><circle cx="64" cy="50" r="12" fill="#f0c974"/><circle cx="82" cy="54" r="12" fill="#f0c974"/><path d="M36 40l10 12M92 40l-10 12" stroke="#f0c974" stroke-width="4" stroke-linecap="round" opacity="0.8"/><path d="M54 98l10-18 10 18" stroke="#f7df9d" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
-    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Default action"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
-  };
-  return icons[id] || icons.default;
-}
-
-function svgForStory(story) {
-  const id = String(story?.id || "");
-  const isCave = /cave|marsh|deep|grotto|tunnel/i.test(id);
-  const isVillage = /village|goblin|forest|road|camp/i.test(id);
-  const isRuins = /ruin|ancient|temple|crypt|sentinel/i.test(id);
-  if (isCave) {
-    return '<svg width="46" height="46" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cave story"><rect width="128" height="128" rx="18" fill="#0e1115"/><path d="M16 88c20-26 31-38 48-38 17 0 31 12 48 38v18H16V88Z" fill="#203440"/><path d="M30 84c8-18 18-26 34-26s26 8 34 26" stroke="#7fe5d4" stroke-width="5" fill="none" stroke-linecap="round"/><circle cx="64" cy="48" r="10" fill="#7fe5d4" opacity="0.8"/></svg>';
-  }
-  if (isRuins) {
-    return '<svg width="46" height="46" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ruins story"><rect width="128" height="128" rx="18" fill="#120f14"/><path d="M22 92h84L94 36H34l-12 56Z" fill="#2a2135" stroke="#d9b56d" stroke-width="3"/><path d="M46 92V58h32v34M30 92V66h12v26M86 92V66h12v26" stroke="#d9b56d" stroke-width="4" fill="none"/><circle cx="64" cy="50" r="10" fill="#d9b56d" opacity="0.8"/></svg>';
-  }
-  if (isVillage) {
-    return '<svg width="46" height="46" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Village story"><rect width="128" height="128" rx="18" fill="#0d1410"/><path d="M20 90h88v18H20z" fill="#1a2d24"/><path d="M34 90V56l28-24 28 24v34" fill="#20372d" stroke="#8fe7d3" stroke-width="3"/><path d="M48 90V68h32v22" fill="#8fe7d3" opacity="0.18"/><path d="M60 43h8v12h-8z" fill="#8fe7d3" opacity="0.8"/></svg>';
-  }
-  return '<svg width="46" height="46" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Story default"><rect width="128" height="128" rx="18" fill="#0d1416"/><rect x="24" y="24" width="80" height="80" rx="16" fill="#14222d" stroke="#7fe5d4" stroke-width="3"/><path d="M38 46h52M38 64h44M38 82h34" stroke="#7fe5d4" stroke-width="5" stroke-linecap="round"/><circle cx="86" cy="82" r="10" fill="#7fe5d4" opacity="0.8"/></svg>';
-}
-
 function actionRow(action) {
   const running = state.activity && state.activity.action_id === action.id;
   const disabled = state.focus < action.cost || !!state.battle || running;
@@ -366,72 +217,18 @@ function actionRow(action) {
     : `<div class="action-buttons">${queuedBadge}<button class="action-button" data-action="${escapeHtml(action.id)}" data-count="1" ${disabled ? "disabled" : ""}>×1</button><button class="action-button" data-action="${escapeHtml(action.id)}" data-count="5" ${disabled ? "disabled" : ""}>×5</button></div>`;
   return `
     <article class="action-item">
-      <div class="action-left">${svgForAction(action.id)}</div>
-      <div class="action-main">
+      <div>
         <strong>${escapeHtml(action.name)}</strong>
         <p>${escapeHtml(action.description)}</p>
         <div class="action-cost">${action.cost} Focus · +${action.xp} XP · +${action.resource} ${escapeHtml(state.resource_label)}</div>
         ${progressHtml}
       </div>
-      <div class="action-right">${buttons}</div>
+      ${buttons}
     </article>`;
 }
 
 function storyRow(story) {
-  const icon = svgForStory(story);
-  return `
-    <article class="story-item">
-      <div class="story-left">${icon}</div>
-      <div class="story-main"><strong>${escapeHtml(story.title)}</strong><p>${escapeHtml(story.text || story.subtitle || '')}</p></div>
-      <div class="story-right"><button class="story-start" data-story="${escapeHtml(story.id)}">Start</button></div>
-    </article>`;
-}
-
-function enemySigilSvg(name = "Enemy") {
-  const lower = String(name).toLowerCase();
-  const isSpider = /spider|fang|web|crawler/i.test(lower);
-  const isLizard = /lizard|serpent|basilisk|reptile/i.test(lower);
-  const isGoblin = /goblin|wolf|orc|bandit/i.test(lower);
-  const isBoss = /boss|sentinel|guardian|captain|centipede|basilisk/i.test(lower);
-
-  if (isSpider) {
-    return `<div class="enemy-sigil" aria-label="Spider enemy"><svg viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="#ef8674" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="80" cy="82" r="26" fill="#221415" stroke="#ef8674"/><circle cx="80" cy="82" r="8" fill="#ef8674"/>
-      <path d="M26 56L48 64M134 56L112 64M26 104L48 96M134 104L112 96M58 32L66 54M102 32L94 54M58 128L66 106M102 128L94 106"/>
-      <path d="M54 96L40 118M106 96L120 118M54 64L38 44M106 64L122 44"/>
-    </g></svg></div>`;
-  }
-
-  if (isLizard) {
-    return `<div class="enemy-sigil" aria-label="Lizard enemy"><svg viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="#ef8674" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M32 90c12-28 24-42 48-42s36 14 48 42c-8 18-24 30-48 30s-40-12-48-30Z" fill="#1c1719"/>
-      <path d="M44 66l18-20M116 66l-18-20M58 44l8 18M102 44l-8 18"/>
-      <circle cx="62" cy="86" r="6" fill="#ef8674"/><circle cx="98" cy="86" r="6" fill="#ef8674"/>
-      <path d="M68 104l12 14 12-14"/>
-    </g></svg></div>`;
-  }
-
-  if (isGoblin) {
-    return `<div class="enemy-sigil" aria-label="Goblin enemy"><svg viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="#ef8674" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M54 102l-20-20 26-28 30 10 20-10 26 28-20 20H54Z" fill="#1f1718"/>
-      <circle cx="66" cy="76" r="5" fill="#ef8674"/><circle cx="94" cy="76" r="5" fill="#ef8674"/>
-      <path d="M66 98h28"/>
-    </g></svg></div>`;
-  }
-
-  if (isBoss) {
-    return `<div class="enemy-sigil boss" aria-label="Boss enemy"><svg viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="#f4c08d" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M80 24L120 52L102 118H58L40 52L80 24Z" fill="#241a16"/>
-      <path d="M80 46V106M52 64h56M52 96h56"/>
-      <circle cx="80" cy="78" r="8" fill="#f4c08d"/>
-    </g></svg></div>`;
-  }
-
-  return `<div class="enemy-sigil" aria-label="Enemy sigil"><svg viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="#ef8674" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M80 22L118 56L102 120H58L42 56L80 22Z" fill="#1b181b"/>
-    <path d="M80 48v52M52 76h56M58 44l22 18 22-18"/>
-    <circle cx="80" cy="82" r="8" fill="#ef8674"/>
-  </g></svg></div>`;
+  return `<article class="story-item"><div><strong>${escapeHtml(story.title)}</strong><p>${escapeHtml(story.text || story.subtitle || '')}</p></div><div><button class="story-start" data-story="${escapeHtml(story.id)}">Start</button></div></article>`;
 }
 
 function logEntry(item) {
@@ -472,11 +269,11 @@ function battlePanel() {
       <p class="eyebrow">${battle.boss ? "REGION BOSS" : "ENCOUNTER"} · TURN ${battle.turn}</p>
       <div class="battle-head-row"><h2>${escapeHtml(title)}</h2><label class="auto-label"><input type="checkbox" id="auto-combat" /> Auto</label></div>
     </header>
-    <div class="battle-stage">${enemySigilSvg(current.name || title)}</div>
+    <div class="battle-stage"><div class="enemy-sigil" aria-label="Enemy sigil"></div></div>
     <div class="enemy-info">
       <div class="enemy-title"><strong>${escapeHtml(current.name || title)}</strong><span>${escapeHtml(subtitle)}</span></div>
       ${bar("Enemy vitality", current.hp || 0, current.max_hp || 1, "hp")}
-      ${enemies.length > 1 ? `<div class="enemy-list">${enemies.map((e, i) => `<button class="enemy-list-item${(selectedEnemyIndex === i) ? ' selected' : ''}" data-target="${i}"><span class="enemy-icon">${escapeHtml((e.name || '').charAt(0).toUpperCase())}</span><span class="enemy-label">${escapeHtml(e.name)}</span><span class="enemy-hp">${e.hp}/${e.max_hp}</span></button>`).join("")}</div>` : ""}
+      ${enemies.length > 1 ? `<div class="enemy-list">${enemies.map((e, i) => `<button class="enemy-list-item${(selectedEnemyIndex === i) ? ' selected' : ''}" data-target="${i}">${escapeHtml(e.name)} (${e.hp}/${e.max_hp})</button>`).join("")}</div>` : ""}
     </div>
     <div class="skill-list">${state.skills.map(skillButton).join("")}</div>
     <div class="battle-tools"><button class="ghost-button" id="flee-button">Withdraw</button></div>`;
