@@ -10,7 +10,12 @@ from typing import Any
 from .content import (
     ACTIONS,
     ALLIES,
+    ASTRAL_UPGRADES,
+    DARK_RITUAL,
     HERO,
+    REINCARNATION_CLASSES,
+    RESEARCH_COSTS,
+    SINS,
     SKILLS,
     STORY_NODES,
     STORY_OBJECTIVES,
@@ -25,9 +30,10 @@ class GameError(ValueError):
 
 
 class GameEngine:
-    VERSION = 2
+    VERSION = 3
     MAX_LOG = 64
     MAX_PARTY = 3
+    MAX_PASSIVE = 2
 
     def __init__(self, rng: random.Random | None = None):
         self.rng = rng or random.Random()
@@ -59,6 +65,9 @@ class GameEngine:
             "magicules": 0,
             "research": 0,
             "insight": 0,
+            "focus": 12,
+            "max_focus": 21,
+            "focus_recovery_seconds": 85,
             "training": {"attack": 0, "mana": 0},
             "activity": None,
             # queued actions persist in the save so players can queue multiple runs
@@ -67,11 +76,16 @@ class GameEngine:
             "unlocked_actions": ["gather_dew"],
             "unlocked_zones": [],
             "zone_runs": {zone_id: 0 for zone_id in ZONES},
+            "max_party_slots": self.MAX_PARTY,
+            "max_passive_slots": self.MAX_PASSIVE,
+            "unique_skill_slots": 0,
+            "ultimate_skill_slots": 0,
             "dungeon_run": None,
             "battle": None,
             "loops": {},
             "allies": {},
             "active_party": [],
+            "passive_party": [],
             "friendships": {},
             "story_phase": "awakening",
             "pending_story": "inner_voice",
@@ -81,6 +95,18 @@ class GameEngine:
             "total_victories": 0,
             "total_runs": 0,
             "log": [],
+            # --- Your Chronicle mechanics ---
+            "instant_cooldowns": {},
+            "upgrade_counts": {},
+            "next_actions_completed": [],
+            "research_unlocks": {},
+            "habit_points": 0,
+            "inspiration": 0,
+            "astral_upgrades": {},
+            "reincarnations": 0,
+            "reincarnation_class": None,
+            "sins": {},
+            "prestige_multipliers": {"magicules": 1.0, "gold": 1.0, "xp": 1.0, "attack": 1.0, "hp": 1.0, "insight": 0},
         }
         self._log(state, "You awaken in darkness with no body you recognize.", "story")
         self._log(state, "A voice inside your mind is waiting for an answer.", "system")
@@ -105,6 +131,10 @@ class GameEngine:
             self._complete_activity(state)
         # process any running loop actions
         self._process_loops(state)
+        # recover focus over time
+        self._recover_focus(state)
+        # process instant action cooldowns
+        self._process_cooldowns(state)
         self._check_story_progress(state)
         return self.public_state(state)
 
@@ -170,12 +200,305 @@ class GameEngine:
         self._log(state, f"Cancelled {name}; no rewards were gained.", "system")
         return self.public_state(state)
 
+    # ============================================================
+    # Loop actions
+    # ============================================================
+    def start_loop(self, state: dict[str, Any], action_id: str) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if action_id not in ACTIONS or ACTIONS[action_id].get("type") != "loop":
+            raise GameError("That is not a loop action.")
+        if state["level"] < ACTIONS[action_id].get("unlock_level", 1):
+            raise GameError(f"Unlocks at level {ACTIONS[action_id].get('unlock_level', 1)}.")
+        if state.get("pending_story"):
+            raise GameError("Resolve the current conversation first.")
+        if state.get("dungeon_run") and not self._has_astral(state, "doppelganger"):
+            raise GameError("Finish the current expedition first, or unlock Doppelganger.")
+        if state.get("activity") and not self._has_astral(state, "doppelganger"):
+            raise GameError("Finish the current action first, or unlock Doppelganger.")
+        if action_id in state.get("loops", {}):
+            raise GameError("That loop is already running.")
+        now = time.time()
+        action = ACTIONS[action_id]
+        state.setdefault("loops", {})[action_id] = {
+            "action_id": action_id,
+            "active": True,
+            "started_at": now,
+            "last_tick": now,
+            "next_tick": now + action.get("interval", 10),
+            "interval": action.get("interval", 10),
+        }
+        self._log(state, f"Loop started: {action['name']} runs in the background.", "action")
+        return self.public_state(state)
+
+    def stop_loop(self, state: dict[str, Any], action_id: str) -> dict[str, Any]:
+        loops = state.get("loops", {})
+        if action_id not in loops:
+            raise GameError("That loop is not running.")
+        name = ACTIONS[action_id]["name"]
+        del loops[action_id]
+        self._log(state, f"Stopped loop: {name}.", "system")
+        return self.public_state(state)
+
+    # ============================================================
+    # Instant actions
+    # ============================================================
+    def perform_instant(self, state: dict[str, Any], action_id: str) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if action_id not in ACTIONS or ACTIONS[action_id].get("type") != "instant":
+            raise GameError("That is not an instant action.")
+        action = ACTIONS[action_id]
+        if state["level"] < action.get("unlock_level", 1):
+            raise GameError(f"Unlocks at level {action.get('unlock_level', 1)}.")
+        # check cooldown
+        cooldowns = state.setdefault("instant_cooldowns", {})
+        now = time.time()
+        if action_id in cooldowns and now < cooldowns[action_id]:
+            remaining = int(cooldowns[action_id] - now)
+            raise GameError(f"On cooldown — {remaining}s remaining.")
+        # check costs
+        focus_cost = action.get("focus_cost", 0)
+        gold_cost = action.get("gold_cost", 0)
+        if state["focus"] < focus_cost:
+            raise GameError("Not enough Focus.")
+        if state["gold"] < gold_cost:
+            raise GameError("Not enough Gold.")
+        # apply costs
+        state["focus"] -= focus_cost
+        state["gold"] -= gold_cost
+        # apply rewards with multipliers
+        magicules = round(action.get("magicules", 0) * self._multiplier(state, "magicules"))
+        gold = round(action.get("gold", 0) * self._multiplier(state, "gold"))
+        insight = action.get("insight", 0) + self._multiplier(state, "insight")
+        state["magicules"] += magicules
+        state["gold"] += gold
+        state["insight"] += insight
+        # set cooldown
+        cooldowns[action_id] = now + action.get("cooldown", 10)
+        self._log(state, f"{action['name']}: +{magicules} Magicules, +{gold} Gold, +{insight} Insight.", "action")
+        return self.public_state(state)
+
+    # ============================================================
+    # Upgrade actions
+    # ============================================================
+    def perform_upgrade(self, state: dict[str, Any], action_id: str) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if action_id not in ACTIONS or ACTIONS[action_id].get("type") != "upgrade":
+            raise GameError("That is not an upgrade action.")
+        action = ACTIONS[action_id]
+        if state["level"] < action.get("unlock_level", 1):
+            raise GameError(f"Unlocks at level {action.get('unlock_level', 1)}.")
+        # check costs
+        for resource, cost in action.get("cost", {}).items():
+            if state.get(resource, 0) < cost:
+                raise GameError(f"Not enough {resource.replace('_', ' ').title()}.")
+        # apply costs
+        for resource, cost in action.get("cost", {}).items():
+            state[resource] -= cost
+        # apply effects
+        for stat, amount in action.get("effect", {}).items():
+            if stat == "party_slots":
+                if len(state["active_party"]) >= self.MAX_PARTY + 2:
+                    raise GameError("Party slots are already at maximum.")
+                state["max_party_slots"] = state.get("max_party_slots", self.MAX_PARTY) + 1
+            elif stat == "passive_slots":
+                if len(state["passive_party"]) >= self.MAX_PASSIVE + 2:
+                    raise GameError("Passive slots are already at maximum.")
+                state["max_passive_slots"] = state.get("max_passive_slots", self.MAX_PASSIVE) + 1
+            else:
+                state[stat] = state.get(stat, 0) + amount
+                if stat == "max_hp":
+                    state["hp"] = min(state["max_hp"], state["hp"] + amount)
+                if stat == "max_mana":
+                    state["mana"] = min(state["max_mana"], state["mana"] + amount)
+        # track upgrade count
+        state.setdefault("upgrade_counts", {})[action_id] = state.get("upgrade_counts", {}).get(action_id, 0) + 1
+        self._log(state, f"Upgrade complete: {action['name']}.", "growth")
+        return self.public_state(state)
+
+    # ============================================================
+    # Next actions (story checkpoints)
+    # ============================================================
+    def perform_next(self, state: dict[str, Any], action_id: str) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if action_id not in ACTIONS or ACTIONS[action_id].get("type") != "next":
+            raise GameError("That is not a next action.")
+        action = ACTIONS[action_id]
+        if action_id in state.get("next_actions_completed", []):
+            raise GameError("That checkpoint has already been completed.")
+        # check costs
+        for resource, cost in action.get("cost", {}).items():
+            if state.get(resource, 0) < cost:
+                raise GameError(f"Not enough {resource.replace('_', ' ').title()}.")
+        # apply costs
+        for resource, cost in action.get("cost", {}).items():
+            state[resource] -= cost
+        # mark completed
+        state.setdefault("next_actions_completed", []).append(action_id)
+        # advance story phase if applicable
+        target_phase = action.get("story_phase")
+        if target_phase and state["story_phase"] != target_phase:
+            state["story_phase"] = target_phase
+            self._log(state, f"STORY ADVANCED — {action['name']} completed. New chapter begins.", "story")
+        self._log(state, f"Checkpoint complete: {action['name']}.", "growth")
+        self._check_story_progress(state)
+        return self.public_state(state)
+
+    # ============================================================
+    # Research & Summoning
+    # ============================================================
+    def summon_ally(self, state: dict[str, Any], ally_id: str) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if ally_id not in ALLIES:
+            raise GameError("That creature is unknown.")
+        if ally_id in state["allies"]:
+            raise GameError("That creature has already joined you.")
+        cost = RESEARCH_COSTS.get(ally_id)
+        if not cost:
+            raise GameError("That creature cannot be summoned through research.")
+        if state["research"] < cost:
+            raise GameError(f"Need {cost} Research to summon {ALLIES[ally_id]['name']}.")
+        state["research"] -= cost
+        self._grant_ally(state, ally_id, guaranteed=True)
+        state.setdefault("research_unlocks", {})[ally_id] = True
+        self._log(state, f"RESEARCH COMPLETE — {ALLIES[ally_id]['name']} summoned through research.", "growth")
+        return self.public_state(state)
+
+    # ============================================================
+    # Prestige — Dark Ritual
+    # ============================================================
+    def dark_ritual(self, state: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if state["level"] < DARK_RITUAL["min_level"]:
+            raise GameError(f"Dark Ritual requires level {DARK_RITUAL['min_level']}.")
+        if state.get("activity") or state.get("dungeon_run"):
+            raise GameError("Finish all activities before performing the Dark Ritual.")
+        # calculate gains
+        level = state["level"]
+        habit_gain = level * DARK_RITUAL["habit_per_level"]
+        inspiration_gain = (level // 10) * DARK_RITUAL["inspiration_per_10_levels"]
+        # reset progress
+        base = HERO["base"]
+        state["level"] = 1
+        state["xp"] = 0
+        state["xp_next"] = self.xp_needed(1)
+        state["hp"] = base["hp"]
+        state["max_hp"] = base["hp"]
+        state["mana"] = base["mana"]
+        state["max_mana"] = base["mana"]
+        state["attack"] = base["attack"]
+        state["defense"] = base["defense"]
+        state["speed"] = base["speed"]
+        state["gold"] = 0
+        state["magicules"] = 0
+        state["research"] = 0
+        state["insight"] = 0
+        state["activity"] = None
+        state["action_queue"] = []
+        state["dungeon_run"] = None
+        state["battle"] = None
+        state["loops"] = {}
+        state["instant_cooldowns"] = {}
+        # keep allies, friendships, story progress, upgrades
+        # add habit points and inspiration
+        state["habit_points"] = state.get("habit_points", 0) + habit_gain
+        state["inspiration"] = state.get("inspiration", 0) + inspiration_gain
+        self._log(state, f"DARK RITUAL — Gained {habit_gain} Habit Points and {inspiration_gain} Inspiration.", "growth")
+        return self.public_state(state)
+
+    def buy_astral_upgrade(self, state: dict[str, Any], upgrade_id: str) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if upgrade_id not in ASTRAL_UPGRADES:
+            raise GameError("That astral upgrade is unknown.")
+        upgrade = ASTRAL_UPGRADES[upgrade_id]
+        current_level = state.get("astral_upgrades", {}).get(upgrade_id, 0)
+        if current_level >= upgrade["max_level"]:
+            raise GameError("That upgrade is already at maximum level.")
+        if state["inspiration"] < upgrade["cost"]:
+            raise GameError("Not enough Inspiration.")
+        state["inspiration"] -= upgrade["cost"]
+        state.setdefault("astral_upgrades", {})[upgrade_id] = current_level + 1
+        self._log(state, f"Astral upgrade: {upgrade['name']} (level {current_level + 1}).", "growth")
+        return self.public_state(state)
+
+    # ============================================================
+    # Reincarnation
+    # ============================================================
+    def reincarnate(self, state: dict[str, Any], class_id: str) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if class_id not in REINCARNATION_CLASSES:
+            raise GameError("That reincarnation class is unknown.")
+        if state["level"] < 10:
+            raise GameError("Reincarnation requires level 10.")
+        if state.get("activity") or state.get("dungeon_run"):
+            raise GameError("Finish all activities before reincarnating.")
+        cls = REINCARNATION_CLASSES[class_id]
+        reincarnations = state.get("reincarnations", 0)
+        # reset everything except permanent multipliers
+        base = HERO["base"]
+        state["level"] = 1
+        state["xp"] = 0
+        state["xp_next"] = self.xp_needed(1)
+        state["hp"] = base["hp"] + cls["base_bonus"].get("max_hp", 0) + cls["per_reincarnation"].get("max_hp", 0) * reincarnations
+        state["max_hp"] = state["hp"]
+        state["mana"] = base["mana"] + cls["base_bonus"].get("max_mana", 0) + cls["per_reincarnation"].get("max_mana", 0) * reincarnations
+        state["max_mana"] = state["mana"]
+        state["attack"] = base["attack"] + cls["base_bonus"].get("attack", 0) + cls["per_reincarnation"].get("attack", 0) * reincarnations
+        state["defense"] = base["defense"] + cls["base_bonus"].get("defense", 0) + cls["per_reincarnation"].get("defense", 0) * reincarnations
+        state["speed"] = base["speed"]
+        state["gold"] = 0
+        state["magicules"] = 0
+        state["research"] = 0
+        state["insight"] = 0
+        state["activity"] = None
+        state["action_queue"] = []
+        state["dungeon_run"] = None
+        state["battle"] = None
+        state["loops"] = {}
+        state["instant_cooldowns"] = {}
+        state["allies"] = {}
+        state["active_party"] = []
+        state["passive_party"] = []
+        state["friendships"] = {}
+        state["reincarnations"] = reincarnations + 1
+        state["reincarnation_class"] = class_id
+        # keep astral upgrades, habit points, inspiration, story progress
+        self._log(state, f"REINCARNATION — You are reborn as a {cls['name']}. The world remembers your legend.", "story")
+        return self.public_state(state)
+
+    # ============================================================
+    # Sin system
+    # ============================================================
+    def unlock_sin(self, state: dict[str, Any], sin_id: str) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if sin_id not in SINS:
+            raise GameError("That sin is unknown.")
+        sin = SINS[sin_id]
+        if state["level"] < sin["unlock_level"]:
+            raise GameError(f"{sin['name']} unlocks at level {sin['unlock_level']}.")
+        if sin_id in state.get("sins", {}):
+            raise GameError("That sin is already unlocked.")
+        state.setdefault("sins", {})[sin_id] = {"level": 1}
+        self._log(state, f"SIN AWAKENED — {sin['name']}: {sin['description']}", "growth")
+        return self.public_state(state)
+
+    def level_sin(self, state: dict[str, Any], sin_id: str) -> dict[str, Any]:
+        self._ensure_ready(state)
+        if sin_id not in state.get("sins", {}):
+            raise GameError("That sin is not unlocked.")
+        cost = 10 * state["sins"][sin_id]["level"]
+        if state["magicules"] < cost:
+            raise GameError(f"Leveling {SINS[sin_id]['name']} costs {cost} Magicules.")
+        state["magicules"] -= cost
+        state["sins"][sin_id]["level"] += 1
+        self._log(state, f"{SINS[sin_id]['name']} leveled to {state['sins'][sin_id]['level']}.", "growth")
+        return self.public_state(state)
+
     def start_dungeon(self, state: dict[str, Any], zone_id: str) -> dict[str, Any]:
         self._ensure_ready(state)
         if state.get("pending_story"):
             raise GameError("Finish the current conversation first.")
-        if state.get("activity"):
-            raise GameError("Wait for the current action to finish.")
+        if state.get("activity") and not self._has_astral(state, "doppelganger"):
+            raise GameError("Wait for the current action to finish, or unlock Doppelganger.")
         if state.get("dungeon_run"):
             raise GameError("An expedition is already in progress.")
         if zone_id not in state["unlocked_zones"] or zone_id not in ZONES:
@@ -253,7 +576,8 @@ class GameEngine:
             party_attack, _ = self._party_bonuses(state)
             effective_defense = chosen["defense"] * (1 - skill.get("pierce", 0))
             variance = self.rng.randint(0, max(1, state["level"] // 3 + 1))
-            damage = max(1, round((state["attack"] + party_attack) * skill["power"] + variance - effective_defense))
+            attack_mult = self._multiplier(state, "attack")
+            damage = max(1, round((state["attack"] * attack_mult + party_attack) * skill["power"] + variance - effective_defense))
             verb = "hit"
         hp_after = max(0, hp_before - damage)
         chosen["hp"] = hp_after
@@ -384,11 +708,20 @@ class GameEngine:
         if ally_id in state["active_party"]:
             state["active_party"].remove(ally_id)
             self._log(state, f"{ALLIES[ally_id]['name']} leaves the active party but remains an ally.", "system")
+        elif ally_id in state["passive_party"]:
+            state["passive_party"].remove(ally_id)
+            self._log(state, f"{ALLIES[ally_id]['name']} leaves the passive party.", "system")
         else:
-            if len(state["active_party"]) >= self.MAX_PARTY:
-                raise GameError("The active party can contain at most three allies.")
-            state["active_party"].append(ally_id)
-            self._log(state, f"{ALLIES[ally_id]['name']} joins the active party.", "growth")
+            max_active = state.get("max_party_slots", self.MAX_PARTY)
+            max_passive = state.get("max_passive_slots", self.MAX_PASSIVE)
+            if len(state["active_party"]) < max_active:
+                state["active_party"].append(ally_id)
+                self._log(state, f"{ALLIES[ally_id]['name']} joins the active party.", "growth")
+            elif len(state["passive_party"]) < max_passive:
+                state["passive_party"].append(ally_id)
+                self._log(state, f"{ALLIES[ally_id]['name']} joins the passive party.", "growth")
+            else:
+                raise GameError("No party slots available. Remove an ally first.")
         return self.public_state(state)
 
     def make_story_choice(self, state: dict[str, Any], option_id: str) -> dict[str, Any]:
@@ -526,6 +859,7 @@ class GameEngine:
                     "attack": base["attack"] + level_bonus,
                     "defense": base["defense"] + level_bonus // 2,
                     "active": ally_id in state["active_party"],
+                    "passive": ally_id in state["passive_party"],
                 }
             )
         attack_bonus, defense_bonus = self._party_bonuses(state)
@@ -547,6 +881,101 @@ class GameEngine:
         data["available_stories"] = [
             {**copy.deepcopy(STORY_NODES[n]), "id": n} for n in state.get("available_stories", [])
         ]
+
+        # --- Your Chronicle additions ---
+        # Loop actions (all available loops with active status)
+        data["loops"] = []
+        for action_id, action in ACTIONS.items():
+            if action.get("type") == "loop" and state["level"] >= action.get("unlock_level", 1):
+                data["loops"].append({
+                    **copy.deepcopy(action),
+                    "active": action_id in state.get("loops", {}),
+                })
+
+        # Instant actions
+        data["instant_actions"] = []
+        for action_id, action in ACTIONS.items():
+            if action.get("type") == "instant" and state["level"] >= action.get("unlock_level", 1):
+                cooldown_until = state.get("instant_cooldowns", {}).get(action_id, 0)
+                remaining = max(0, int(cooldown_until - now))
+                data["instant_actions"].append({
+                    **copy.deepcopy(action),
+                    "cooldown_remaining": remaining,
+                })
+
+        # Upgrade actions
+        data["upgrade_actions"] = []
+        for action_id, action in ACTIONS.items():
+            if action.get("type") == "upgrade" and state["level"] >= action.get("unlock_level", 1):
+                data["upgrade_actions"].append({
+                    **copy.deepcopy(action),
+                    "purchased": state.get("upgrade_counts", {}).get(action_id, 0),
+                })
+
+        # Next actions
+        data["next_actions"] = []
+        for action_id, action in ACTIONS.items():
+            if action.get("type") == "next":
+                completed = action_id in state.get("next_actions_completed", [])
+                data["next_actions"].append({
+                    **copy.deepcopy(action),
+                    "completed": completed,
+                    "can_afford": all(state.get(res, 0) >= cost for res, cost in action.get("cost", {}).items()),
+                })
+
+        # Research & summoning
+        data["research_costs"] = copy.deepcopy(RESEARCH_COSTS)
+        data["summonable_allies"] = []
+        for ally_id, cost in RESEARCH_COSTS.items():
+            if ally_id not in state["allies"]:
+                data["summonable_allies"].append({
+                    "id": ally_id,
+                    "name": ALLIES[ally_id]["name"],
+                    "species": ALLIES[ally_id]["species"],
+                    "role": ALLIES[ally_id]["role"],
+                    "cost": cost,
+                    "can_afford": state["research"] >= cost,
+                })
+
+        # Prestige
+        data["dark_ritual"] = {
+            **copy.deepcopy(DARK_RITUAL),
+            "can_perform": state["level"] >= DARK_RITUAL["min_level"],
+            "habit_gain": state["level"] * DARK_RITUAL["habit_per_level"],
+            "inspiration_gain": (state["level"] // 10) * DARK_RITUAL["inspiration_per_10_levels"],
+        }
+
+        # Astral upgrades
+        data["astral_upgrades"] = []
+        for upgrade_id, upgrade in ASTRAL_UPGRADES.items():
+            current_level = state.get("astral_upgrades", {}).get(upgrade_id, 0)
+            data["astral_upgrades"].append({
+                **copy.deepcopy(upgrade),
+                "id": upgrade_id,
+                "level": current_level,
+                "maxed": current_level >= upgrade["max_level"],
+                "can_afford": state["inspiration"] >= upgrade["cost"],
+            })
+
+        # Reincarnation
+        data["reincarnation_classes"] = copy.deepcopy(REINCARNATION_CLASSES)
+        data["can_reincarnate"] = state["level"] >= 10
+
+        # Sins
+        data["sins"] = []
+        for sin_id, sin in SINS.items():
+            unlocked = sin_id in state.get("sins", {})
+            data["sins"].append({
+                **copy.deepcopy(sin),
+                "id": sin_id,
+                "unlocked": unlocked,
+                "level": state.get("sins", {}).get(sin_id, {}).get("level", 0),
+                "can_unlock": state["level"] >= sin["unlock_level"],
+            })
+
+        # Prestige multipliers
+        data["prestige_multipliers"] = copy.deepcopy(state.get("prestige_multipliers", {}))
+
         return data
 
     def _complete_activity(self, state: dict[str, Any]) -> None:
@@ -555,10 +984,10 @@ class GameEngine:
         action_id = action["id"]
         state["activity"] = None
         state["action_counts"][action_id] += 1
-        state["magicules"] += action["magicules"]
-        state["insight"] += action["insight"]
+        state["magicules"] += round(action["magicules"] * self._multiplier(state, "magicules"))
+        state["insight"] += action["insight"] + self._multiplier(state, "insight")
         state["hp"] = min(state["max_hp"], state["hp"] + action.get("heal", 0))
-        self._grant_xp(state, action["xp"])
+        self._grant_xp(state, round(action["xp"] * self._multiplier(state, "xp")))
         for friend, amount in action.get("friendship", {}).items():
             state["friendships"][friend] = state["friendships"].get(friend, 0) + amount
         trained = action.get("training")
@@ -615,7 +1044,7 @@ class GameEngine:
                 if not action_id or action_id not in ACTIONS:
                     continue
                 action = ACTIONS[action_id]
-                interval = loop.get("interval", action.get("duration", 6))
+                interval = loop.get("interval", action.get("interval", 10))
                 # last_tick defaults to when the loop started; fallback to now
                 last = loop.get("last_tick", loop.get("started_at", now))
                 next_tick = loop.get("next_tick", last + interval)
@@ -623,13 +1052,16 @@ class GameEngine:
                 # grant up to 10 missed ticks to prevent long stalls
                 while now >= next_tick and ticks < 10:
                     # apply periodic rewards (light version of completing the action)
-                    state["magicules"] += action.get("magicules", 0)
-                    state["insight"] += action.get("insight", 0)
+                    state["magicules"] += round(action.get("magicules", 0) * self._multiplier(state, "magicules"))
+                    state["insight"] += action.get("insight", 0) + self._multiplier(state, "insight")
+                    state["gold"] += round(action.get("gold", 0) * self._multiplier(state, "gold"))
+                    state["research"] += action.get("research", 0)
                     state["hp"] = min(state.get("max_hp", 0), state.get("hp", 0) + action.get("heal", 0))
-                    self._grant_xp(state, action.get("xp", 0))
+                    state["mana"] = min(state.get("max_mana", 0), state.get("mana", 0) + action.get("mana_regen", 0))
+                    self._grant_xp(state, round(action.get("xp", 0) * self._multiplier(state, "xp")))
                     # record a passive completion count so story unlocks still see progress
                     state.setdefault("action_counts", {})[action_id] = state.setdefault("action_counts", {}).get(action_id, 0) + 1
-                    self._log(state, f"Auto: {action['name']} produced +{action.get('magicules',0)} Magicules.", "action")
+                    self._log(state, f"Auto: {action['name']} produced rewards.", "action")
                     ticks += 1
                     last = next_tick
                     next_tick += interval
@@ -638,6 +1070,27 @@ class GameEngine:
             except Exception:
                 # avoid any loop processing error from blocking the rest of the refresh
                 continue
+
+    def _recover_focus(self, state: dict[str, Any]) -> None:
+        """Recover focus over time based on focus_recovery_seconds."""
+        now = time.time()
+        last = state.get("_last_focus_tick", now)
+        elapsed = now - last
+        if elapsed >= 1:
+            recovery_interval = state.get("focus_recovery_seconds", 85)
+            # recover 1 focus per interval
+            recovered = int(elapsed / recovery_interval)
+            if recovered > 0:
+                state["focus"] = min(state.get("max_focus", 21), state.get("focus", 12) + recovered)
+                state["_last_focus_tick"] = now
+
+    def _process_cooldowns(self, state: dict[str, Any]) -> None:
+        """Clean up expired instant action cooldowns."""
+        now = time.time()
+        cooldowns = state.get("instant_cooldowns", {})
+        expired = [k for k, v in cooldowns.items() if now >= v]
+        for k in expired:
+            del cooldowns[k]
 
     def _spawn_encounter(self, state: dict[str, Any]) -> None:
         run = state["dungeon_run"]
@@ -684,17 +1137,18 @@ class GameEngine:
         """Process rewards and recruitment for a single defeated enemy within an encounter."""
         run = state["dungeon_run"]
         # apply rewards per-enemy
-        state["gold"] += enemy.get("gold", 0)
-        state["magicules"] += enemy.get("magicules", 0)
+        state["gold"] += round(enemy.get("gold", 0) * self._multiplier(state, "gold"))
+        state["magicules"] += round(enemy.get("magicules", 0) * self._multiplier(state, "magicules"))
+        state["research"] += enemy.get("research", 0)
         run["earned_gold"] += enemy.get("gold", 0)
         run["earned_magicules"] += enemy.get("magicules", 0)
         run["victories"] += 1
         state["total_victories"] += 1
-        self._grant_xp(state, enemy.get("xp", 0))
+        self._grant_xp(state, round(enemy.get("xp", 0) * self._multiplier(state, "xp")))
         recruited = self._try_recruit(state, enemy)
         if recruited:
             run["recruited"].append(recruited)
-        self._log(state, f"Victory: +{enemy.get('xp',0)} XP, +{enemy.get('gold',0)} gold, +{enemy.get('magicules',0)} Magicules.", "victory")
+        self._log(state, f"Victory: +{enemy.get('xp',0)} XP, +{enemy.get('gold',0)} gold, +{enemy.get('magicules',0)} Magicules, +{enemy.get('research',0)} Research.", "victory")
 
     def _try_recruit(self, state: dict[str, Any], battle: dict[str, Any]) -> str | None:
         ally_id = battle.get("ally_id")
@@ -712,7 +1166,8 @@ class GameEngine:
             state["allies"][ally_id]["bond"] += 1
             return
         state["allies"][ally_id] = {"level": 1, "bond": 0, "joined_by_story": guaranteed}
-        if len(state["active_party"]) < self.MAX_PARTY:
+        max_active = state.get("max_party_slots", self.MAX_PARTY)
+        if len(state["active_party"]) < max_active:
             state["active_party"].append(ally_id)
         self._log(state, f"NEW ALLY — {ALLIES[ally_id]['name']} the {ALLIES[ally_id]['species']} joins you.", "growth")
 
@@ -765,6 +1220,25 @@ class GameEngine:
             offer("capital_approach")
         elif phase == "prepare_final" and state.get("zone_runs", {}).get("lizard_marsh", 0) >= 2:
             offer("final_campaign")
+        # --- New anime story phases ---
+        elif phase == "dwarf_kingdom" and state.get("zone_runs", {}).get("dwargon", 0) >= 1:
+            offer("meet_gazel")
+        elif phase == "orc_lord_arc" and state.get("zone_runs", {}).get("orc_territory", 0) >= 1:
+            offer("orc_lord_defeat")
+        elif phase == "lizardmen_alliance" and state.get("zone_runs", {}).get("lizardmen_territory", 0) >= 1:
+            offer("lizardmen_meeting")
+        elif phase == "tempest_federation" and state.get("zone_runs", {}).get("tempest_forest", 0) >= 1:
+            offer("kijin_arrival")
+        elif phase == "falmuth_relations" and state.get("zone_runs", {}).get("falmuth", 0) >= 1:
+            offer("falmuth_contact")
+        elif phase == "farmus_invasion" and state.get("zone_runs", {}).get("falmuth", 0) >= 2:
+            offer("falmuth_betrayal")
+        elif phase == "demon_lord_awakening" and state.get("total_victories", 0) >= 30:
+            offer("harvest_festival")
+        elif phase == "walpurgis" and state.get("zone_runs", {}).get("demon_lord_domain", 0) >= 1:
+            offer("clayman_defeat")
+        elif phase == "harvest_festival" and state.get("total_victories", 0) >= 50:
+            offer("epilogue")
 
         # Side quests — discovered by common play activities (add them to available_stories)
         if state.get("action_counts", {}).get("silent_scout", 0) >= 1 and "lost_lantern" not in completed:
@@ -787,7 +1261,17 @@ class GameEngine:
             offer("pond_rescue")
         if state.get("zone_runs", {}).get("ancient_ruins", 0) >= 2 and "ancient_relic" not in completed:
             offer("ancient_relic")
-
+        # --- New anime side quests ---
+        if state.get("zone_runs", {}).get("forest_road", 0) >= 1 and "goblin_feast" not in completed:
+            offer("goblin_feast")
+        if state.get("zone_runs", {}).get("dwargon", 0) >= 1 and "dwarf_weapon" not in completed:
+            offer("dwarf_weapon")
+        if state.get("zone_runs", {}).get("tempest_forest", 0) >= 1 and "kijin_training" not in completed:
+            offer("kijin_training")
+        if state.get("zone_runs", {}).get("tempest_forest", 0) >= 1 and "shion_cooking" not in completed:
+            offer("shion_cooking")
+        if state.get("zone_runs", {}).get("tempest_forest", 0) >= 1 and "diablo_errand" not in completed:
+            offer("diablo_errand")
 
     @staticmethod
     def _story_progress(state: dict[str, Any]) -> int:
@@ -801,6 +1285,15 @@ class GameEngine:
             "alliance_paths": 22,
             "journey_to_capital": 40,
             "prepare_final": 68,
+            "dwarf_kingdom": 12,
+            "orc_lord_arc": 25,
+            "lizardmen_alliance": 35,
+            "tempest_federation": 45,
+            "falmuth_relations": 55,
+            "demon_lord_awakening": 65,
+            "walpurgis": 75,
+            "farmus_invasion": 85,
+            "harvest_festival": 95,
             "epilogue": 100,
         }[state["story_phase"]]
         if state["story_phase"] == "first_steps":
@@ -817,6 +1310,24 @@ class GameEngine:
             return min(64, base + min(30, state.get("total_victories", 0) * 3))
         if state["story_phase"] == "prepare_final" and state.get("dungeon_run"):
             return min(92, base + state["dungeon_run"].get("victories", 0) * 6)
+        if state["story_phase"] == "dwarf_kingdom":
+            return min(22, base + state.get("zone_runs", {}).get("dwargon", 0) * 5)
+        if state["story_phase"] == "orc_lord_arc":
+            return min(33, base + state.get("zone_runs", {}).get("orc_territory", 0) * 8)
+        if state["story_phase"] == "lizardmen_alliance":
+            return min(43, base + state.get("zone_runs", {}).get("lizardmen_territory", 0) * 8)
+        if state["story_phase"] == "tempest_federation":
+            return min(53, base + state.get("zone_runs", {}).get("tempest_forest", 0) * 8)
+        if state["story_phase"] == "falmuth_relations":
+            return min(63, base + state.get("zone_runs", {}).get("falmuth", 0) * 8)
+        if state["story_phase"] == "demon_lord_awakening":
+            return min(73, base + min(10, state.get("total_victories", 0) // 5))
+        if state["story_phase"] == "walpurgis":
+            return min(83, base + state.get("zone_runs", {}).get("demon_lord_domain", 0) * 8)
+        if state["story_phase"] == "farmus_invasion":
+            return min(93, base + state.get("zone_runs", {}).get("falmuth", 0) * 8)
+        if state["story_phase"] == "harvest_festival":
+            return min(99, base + min(4, state.get("total_victories", 0) // 20))
         return base
 
     def _party_bonuses(self, state: dict[str, Any]) -> tuple[int, int]:
@@ -829,7 +1340,35 @@ class GameEngine:
             level = state["allies"][ally_id]["level"]
             attack += max(1, (base["attack"] + level - 1) // 2)
             defense += max(0, (base["defense"] + (level - 1) // 2) // 2)
+        # passive party members grant half bonuses
+        for ally_id in state.get("passive_party", []):
+            if ally_id not in state["allies"]:
+                continue
+            base = ALLIES[ally_id]
+            level = state["allies"][ally_id]["level"]
+            attack += max(0, (base["attack"] + level - 1) // 4)
+            defense += max(0, (base["defense"] + (level - 1) // 2) // 4)
         return attack, defense
+
+    def _multiplier(self, state: dict[str, Any], resource: str) -> float:
+        """Get the prestige multiplier for a resource."""
+        mult = state.get("prestige_multipliers", {}).get(resource, 1.0)
+        # apply astral upgrade multipliers
+        astral = state.get("astral_upgrades", {})
+        if resource == "magicules" and "soul_amplifier" in astral:
+            mult *= 1 + ASTRAL_UPGRADES["soul_amplifier"]["per_level"] * astral["soul_amplifier"]
+        if resource == "gold" and "golden_touch" in astral:
+            mult *= 1 + ASTRAL_UPGRADES["golden_touch"]["per_level"] * astral["golden_touch"]
+        if resource == "attack" and "predator_essence" in astral:
+            mult *= 1 + ASTRAL_UPGRADES["predator_essence"]["per_level"] * astral["predator_essence"]
+        if resource == "hp" and "unbreakable_slime" in astral:
+            mult *= 1 + ASTRAL_UPGRADES["unbreakable_slime"]["per_level"] * astral["unbreakable_slime"]
+        if resource == "insight" and "eternal_insight" in astral:
+            mult += ASTRAL_UPGRADES["eternal_insight"]["per_level"] * astral["eternal_insight"]
+        return mult
+
+    def _has_astral(self, state: dict[str, Any], upgrade_id: str) -> bool:
+        return state.get("astral_upgrades", {}).get(upgrade_id, 0) > 0
 
     @staticmethod
     def _duration_from_difficulty(difficulty: str | None) -> int:
@@ -858,4 +1397,3 @@ class GameEngine:
     def _log(self, state: dict[str, Any], text: str, kind: str) -> None:
         state["log"].append({"text": text, "kind": kind, "time": int(time.time())})
         state["log"] = state["log"][-self.MAX_LOG :]
-

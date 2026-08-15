@@ -85,6 +85,29 @@ class ChronicleHandler(BaseHTTPRequestHandler):
                     result = ENGINE.rest(state)
                 elif path == "/api/choice":
                     result = ENGINE.make_story_choice(state, str(body.get("choice", "")))
+                # --- Your Chronicle mechanics ---
+                elif path == "/api/loop/start":
+                    result = ENGINE.start_loop(state, str(body.get("action", "")))
+                elif path == "/api/loop/stop":
+                    result = ENGINE.stop_loop(state, str(body.get("action", "")))
+                elif path == "/api/instant":
+                    result = ENGINE.perform_instant(state, str(body.get("action", "")))
+                elif path == "/api/upgrade":
+                    result = ENGINE.perform_upgrade(state, str(body.get("action", "")))
+                elif path == "/api/next":
+                    result = ENGINE.perform_next(state, str(body.get("action", "")))
+                elif path == "/api/summon":
+                    result = ENGINE.summon_ally(state, str(body.get("ally", "")))
+                elif path == "/api/ritual":
+                    result = ENGINE.dark_ritual(state)
+                elif path == "/api/astral":
+                    result = ENGINE.buy_astral_upgrade(state, str(body.get("upgrade", "")))
+                elif path == "/api/reincarnate":
+                    result = ENGINE.reincarnate(state, str(body.get("class", "")))
+                elif path == "/api/sin/unlock":
+                    result = ENGINE.unlock_sin(state, str(body.get("sin", "")))
+                elif path == "/api/sin/level":
+                    result = ENGINE.level_sin(state, str(body.get("sin", "")))
                 else:
                     self._json({"error": "Unknown action."}, HTTPStatus.NOT_FOUND)
                     return

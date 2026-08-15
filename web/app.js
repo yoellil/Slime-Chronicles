@@ -5,6 +5,7 @@ let selectedCharacter = "rimuru";
 let busy = false;
 let autoTimer = null;
 let refreshTimer = null;
+let activeTab = "actions";
 // currently selected enemy index (0-based) in multi-enemy encounters
 let selectedEnemyIndex = null;
 // animation frame id for a smooth action progress bar
@@ -43,13 +44,14 @@ function animateActivityProgress() {
 }
 
 
+const AMP = String.fromCharCode(38);
 const escapeHtml = (value) =>
   String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+    .replaceAll(AMP, AMP + "amp;")
+    .replaceAll("<", AMP + "lt;")
+    .replaceAll(">", AMP + "gt;")
+    .replaceAll('"', AMP + "quot;")
+    .replaceAll("'", AMP + "#039;");
 
 const clampPercent = (value, maximum) =>
   Math.max(0, Math.min(100, maximum ? (value / maximum) * 100 : 0));
@@ -195,7 +197,20 @@ function showDamagePopup(targetIndex, text, isPlayer) {
 }
 
 function renderLanding() {
-  const characters = state?.characters || [];
+  const hero = state?.hero;
+  // Build a characters array from the server's single-hero landing state so the
+  // origin screen can re-use the character-card markup.
+  const characters = hero
+    ? [{
+        id: hero.id,
+        name: hero.name,
+        title: hero.title,
+        route: hero.route,
+        ability: hero.ability,
+        ability_text: hero.ability_text,
+        intro: "A nameless slime awakens in a sealed cavern, guided by the voice of a storm dragon and driven by an endless hunger to grow, devour, and protect.",
+      }]
+    : [];
   app.innerHTML = `
     <section class="origin-screen">
       <nav class="origin-nav">
@@ -205,7 +220,7 @@ function renderLanding() {
       <header class="origin-heading">
         <p class="eyebrow">A NEW WORLD REMEMBERS EVERY CHOICE</p>
         <h1>Choose your <em>origin.</em></h1>
-        <p>Two souls. Two power fantasies. Two histories that may one day collide. Your first decision changes the resources you gather, the skills you master, and the story the world records.</p>
+        <p>${escapeHtml(hero?.name || "A soul")} — a being of endless potential in a world that remembers every choice. Begin the chronicle and write the first chapter of a legend.</p>
       </header>
       <div class="origin-grid">
         ${characters.map((character, index) => characterCard(character, index)).join("")}
@@ -251,17 +266,24 @@ function renderGame() {
   app.innerHTML = `
     <section class="game-shell">
       <nav class="game-nav">
-        <div class="wordmark"><span class="wordmark-mark">CR</span> Chronicles</div>
+        <div class="wordmark"><span class="wordmark-mark">CR</span> <span class="wordmark-text">Chronicles of Reincarnation</span></div>
         <div class="nav-center"><span class="save-dot"></span> Auto-saved locally · ${escapeHtml(info.route)}</div>
         <button class="ghost-button" id="new-chronicle">New Chronicle</button>
       </nav>
       <div class="game-layout">
         <aside class="panel profile-panel">
-          <div class="profile-orb"><span class="profile-glyph">${glyph}</span></div>
+          <div class="profile-frame">
+            <div class="profile-orb"><span class="profile-glyph">${glyph}</span></div>
+            <div class="frame-corner tl"></div>
+            <div class="frame-corner tr"></div>
+            <div class="frame-corner bl"></div>
+            <div class="frame-corner br"></div>
+          </div>
           <div class="profile-details">
             <div class="profile-name">
               <p class="eyebrow">${escapeHtml(info.route)}</p>
               <h1>${escapeHtml(info.name)}</h1>
+              <div class="profile-divider"><span class="divider-line"></span><span class="divider-diamond">◆</span><span class="divider-line"></span></div>
               <p>${escapeHtml(info.title)} · ${escapeHtml(state.alignment)}</p>
             </div>
             <div class="level-row"><strong>Level ${state.level}</strong><span>${state.xp} / ${state.xp_next} XP</span></div>
@@ -281,37 +303,43 @@ function renderGame() {
               <div><strong>${state.insight}</strong><span>Insight</span></div>
               <div><strong>${state.gold}</strong><span>Gold</span></div>
             </div>
+            <div class="resource-grid">
+              <div><strong>${state.research}</strong><span>Research</span></div>
+              <div><strong>${state.habit_points}</strong><span>Habits</span></div>
+              <div><strong>${state.inspiration}</strong><span>Inspiration</span></div>
+            </div>
             <div class="route-ability">
               <strong>${escapeHtml(info.ability)}</strong>
               <p>${escapeHtml(info.ability_text)}</p>
             </div>
+            ${state.reincarnations > 0 ? `<div class="reincarnation-badge">Reincarnated ×${state.reincarnations} · ${escapeHtml(state.reincarnation_class || 'Unknown')}</div>` : ""}
           </div>
         </aside>
 
         <section class="panel center-panel">
           <header class="chronicle-head">
-            <div>
-              <p class="eyebrow">CHAPTER I · THE FIRST THRESHOLD</p>
+            <div class="chronicle-heading">
+              <p class="eyebrow">${escapeHtml(state.story_objective || "CHAPTER I · THE FIRST THRESHOLD")}</p>
               <h2>${state.character === "rimuru" ? "Beneath the sealed world" : "A whisper beyond the abyss"}</h2>
+              <div class="chronicle-rule"><span class="rule-line"></span><span class="rule-mark">✦</span><span class="rule-line"></span></div>
             </div>
-            <div class="progress-seal" title="Chapter progress">${state.chronicle_progress}%</div>
+            <div class="progress-seal" title="Chapter progress"><div class="seal-inner">${state.chronicle_progress}%</div></div>
           </header>
-          <section class="actions-section">
-            <div class="section-title"><h3>Available actions</h3><span>Focus restores every ${state.focus_recovery_seconds}s</span></div>
-            <div class="action-list">${state.actions.map(actionRow).join("")}</div>
-          </section>
-          <section class="stories-section">
-            <div class="section-title"><h3>Stories</h3><span>Discovered but not yet started</span></div>
-            <div class="story-list">${(state.available_stories || []).map(s => storyRow(s)).join("")}</div>
-          </section>
-          <section class="log-section">
-            <div class="section-title"><h3>Living chronicle</h3><span>${state.total_victories} victories recorded</span></div>
-            <div class="log-list">${[...state.log].reverse().map(logEntry).join("")}</div>
-          </section>
-          <section class="regions-section">
-            <div class="section-title"><h3>Regions</h3><span>Defeat 5 foes to reveal each boss</span></div>
-            <div class="regions">${state.zones.map(regionCard).join("")}</div>
-          </section>
+          <nav class="tab-bar">
+            ${tabButton("actions", "Actions")}
+            ${tabButton("loops", "Loops")}
+            ${tabButton("instant", "Instant")}
+            ${tabButton("upgrades", "Upgrades")}
+            ${tabButton("next", "Next")}
+            ${tabButton("research", "Research")}
+            ${tabButton("prestige", "Prestige")}
+            ${tabButton("sins", "Sins")}
+            ${tabButton("combat", "Combat")}
+            ${tabButton("story", "Story")}
+          </nav>
+          <div class="tab-content">
+            ${renderTabContent()}
+          </div>
         </section>
 
         <aside class="panel battle-panel">
@@ -320,6 +348,454 @@ function renderGame() {
       </div>
     </section>`;
   bindGameEvents();
+}
+
+function tabButton(id, label) {
+  const active = activeTab === id;
+  return `<button class="tab-button ${active ? "active" : ""}" data-tab="${id}">${escapeHtml(label)}</button>`;
+}
+
+function renderTabContent() {
+  switch (activeTab) {
+    case "actions": return renderActionsTab();
+    case "loops": return renderLoopsTab();
+    case "instant": return renderInstantTab();
+    case "upgrades": return renderUpgradesTab();
+    case "next": return renderNextTab();
+    case "research": return renderResearchTab();
+    case "prestige": return renderPrestigeTab();
+    case "sins": return renderSinsTab();
+    case "combat": return renderCombatTab();
+    case "story": return renderStoryTab();
+    default: return renderActionsTab();
+  }
+}
+
+function renderActionsTab() {
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Available actions</h3><span>Focus restores every ${state.focus_recovery_seconds}s</span></div>
+      <div class="action-list">${state.actions.map(actionRow).join("")}</div>
+    </section>`;
+}
+
+function renderLoopsTab() {
+  const loops = state.loops || [];
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Loop actions</h3><span>Run in the background</span></div>
+      <p class="tab-hint">Loop actions run indefinitely in the background, generating resources automatically. Start one and it keeps working while you do other things.</p>
+      <div class="action-list">
+        ${loops.map(loopRow).join("") || '<p class="empty-tab">No loop actions available yet. Level up to unlock more.</p>'}
+      </div>
+    </section>`;
+}
+
+function loopRow(loop) {
+  return `
+    <article class="action-item loop-item ${loop.active ? "active" : ""}">
+      <div class="action-art">${svgForLoop(loop.id)}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(loop.name)}</strong>
+          <div class="action-meta"><span class="action-cost">Every ${loop.interval}s</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(loop.description)}</p>
+        <div class="action-footer">
+          <div class="loop-rewards">
+            ${loop.magicules ? `<span class="reward-chip">+${loop.magicules} ✦</span>` : ""}
+            ${loop.gold ? `<span class="reward-chip">+${loop.gold} ◎</span>` : ""}
+            ${loop.insight ? `<span class="reward-chip">+${loop.insight} ◈</span>` : ""}
+            ${loop.research ? `<span class="reward-chip">+${loop.research} 🔬</span>` : ""}
+            ${loop.heal ? `<span class="reward-chip">+${loop.heal} HP</span>` : ""}
+            ${loop.mana_regen ? `<span class="reward-chip">+${loop.mana_regen} MP</span>` : ""}
+            ${loop.xp ? `<span class="reward-chip">+${loop.xp} XP</span>` : ""}
+          </div>
+          <div class="action-controls">
+            ${loop.active
+              ? `<button class="action-cancel" data-loop-stop="${escapeHtml(loop.id)}">Stop</button>`
+              : `<button class="action-button" data-loop-start="${escapeHtml(loop.id)}">Start</button>`}
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function svgForLoop(id) {
+  const icons = {
+    rest_loop: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Rest"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M32 88c8-20 20-30 32-30s24 10 32 30" fill="#65e3ce" opacity="0.15" stroke="#65e3ce" stroke-width="4"/><circle cx="64" cy="50" r="14" fill="#65e3ce" opacity="0.8"/><path d="M52 40c4-8 10-12 18-12" stroke="#dffdf6" stroke-width="4" stroke-linecap="round" fill="none"/></svg>',
+    farmwork: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Farmwork"><rect width="128" height="128" rx="22" fill="#171611"/><path d="M20 90h88v18H20z" fill="#1a2d24"/><path d="M34 90V56l28-24 28 24v34" fill="#20372d" stroke="#d9b56d" stroke-width="3"/><path d="M48 90V68h32v22" fill="#d9b56d" opacity="0.18"/><path d="M60 43h8v12h-8z" fill="#d9b56d" opacity="0.8"/></svg>',
+    meditation: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Meditation"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="30" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M64 34v60M34 64h60" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round" opacity="0.6"/><circle cx="64" cy="64" r="10" fill="#7aa7ff" opacity="0.8"/></svg>',
+    hunting: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hunting"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#65e3ce" opacity="0.12" stroke="#65e3ce" stroke-width="4"/><circle cx="46" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="64" cy="50" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="82" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><path d="M36 40l10 12M92 40l-10 12" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
+    worship: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Worship"><rect width="128" height="128" rx="22" fill="#17140f"/><path d="M64 20l12 24 26 4-19 18 4 26-23-12-23 12 4-26-19-18 26-4 12-24Z" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><circle cx="64" cy="64" r="8" fill="#d9b56d" opacity="0.8"/></svg>',
+    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Loop"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
+  };
+  return icons[id] || icons.default;
+}
+
+function renderInstantTab() {
+  const instants = state.instant_actions || [];
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Instant actions</h3><span>Immediate resource trades</span></div>
+      <p class="tab-hint">Instant actions trade resources immediately. Each has a short cooldown.</p>
+      <div class="action-list">
+        ${instants.map(instantRow).join("") || '<p class="empty-tab">No instant actions available yet.</p>'}
+      </div>
+    </section>`;
+}
+
+function instantRow(action) {
+  const onCooldown = action.cooldown_remaining > 0;
+  const costParts = [];
+  if (action.focus_cost) costParts.push(`${action.focus_cost} Focus`);
+  if (action.gold_cost) costParts.push(`${action.gold_cost} Gold`);
+  const rewardParts = [];
+  if (action.magicules) rewardParts.push(`+${action.magicules} ✦`);
+  if (action.gold) rewardParts.push(`+${action.gold} ◎`);
+  if (action.insight) rewardParts.push(`+${action.insight} ◈`);
+  return `
+    <article class="action-item instant-item">
+      <div class="action-art">${svgForInstant(action.id)}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(action.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${costParts.join(" · ")}</span><span class="action-reward">${rewardParts.join(" ")}</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(action.description)}</p>
+        <div class="action-footer">
+          <div class="action-controls">
+            <button class="action-button" data-instant="${escapeHtml(action.id)}" ${onCooldown ? "disabled" : ""}>
+              ${onCooldown ? `${action.cooldown_remaining}s` : "Use"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function svgForInstant(id) {
+  const icons = {
+    get_motivated: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Get Motivated"><rect width="128" height="128" rx="22" fill="#171611"/><path d="M64 20l12 24 26 4-19 18 4 26-23-12-23 12 4-26-19-18 26-4 12-24Z" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><path d="M64 44v40M44 64h40" stroke="#d9b56d" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
+    quick_trade: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Quick Trade"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M24 48h60l-14-14M104 80H44l14 14" stroke="#65e3ce" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="88" cy="48" r="12" fill="#d9b56d" opacity="0.8"/><circle cx="40" cy="80" r="12" fill="#65e3ce" opacity="0.8"/></svg>',
+    scavenge: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Scavenge"><rect width="128" height="128" rx="22" fill="#0d1320"/><path d="M32 96h64M40 96V64l24-20 24 20v32" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="64" cy="44" r="10" fill="#7aa7ff" opacity="0.8"/><path d="M52 96V76h24v20" fill="#7aa7ff" opacity="0.2"/></svg>',
+    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Instant"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
+  };
+  return icons[id] || icons.default;
+}
+
+function renderUpgradesTab() {
+  const upgrades = state.upgrade_actions || [];
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Upgrade actions</h3><span>Permanent stat increases</span></div>
+      <p class="tab-hint">Upgrade actions permanently increase your stats, caps, and party slots.</p>
+      <div class="action-list">
+        ${upgrades.map(upgradeRow).join("") || '<p class="empty-tab">No upgrades available yet. Level up to unlock more.</p>'}
+      </div>
+    </section>`;
+}
+
+function upgradeRow(action) {
+  const costParts = Object.entries(action.cost || {}).map(([res, cost]) => `${cost} ${res.replace('_', ' ').title()}`);
+  const effectParts = Object.entries(action.effect || {}).map(([stat, amount]) => {
+    if (stat === "party_slots") return `+${amount} Party Slot`;
+    if (stat === "passive_slots") return `+${amount} Passive Slot`;
+    return `+${amount} ${stat.replace('_', ' ').title()}`;
+  });
+  const canAfford = Object.entries(action.cost || {}).every(([res, cost]) => (state[res] || 0) >= cost);
+  return `
+    <article class="action-item upgrade-item">
+      <div class="action-art">${svgForUpgrade(action.id)}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(action.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${costParts.join(" · ")}</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(action.description)}</p>
+        <div class="action-footer">
+          <span class="action-reward">${effectParts.join(" · ")}</span>
+          <div class="action-controls">
+            <button class="action-button" data-upgrade="${escapeHtml(action.id)}" ${!canAfford ? "disabled" : ""}>Purchase</button>
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function svgForUpgrade(id) {
+  const icons = {
+    expand_body: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Expand Body"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="30" fill="#132a2c" stroke="#65e3ce" stroke-width="3"/><path d="M64 34v60M34 64h60" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.6"/><path d="M64 24c-18 21-28 34-28 48 0 16 12 28 28 28s28-12 28-28c0-14-10-27-28-48Z" fill="#8ff2df" opacity="0.3"/></svg>',
+    deepen_mana: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Deepen Mana"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="30" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M64 34v60M34 64h60" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round" opacity="0.6"/><circle cx="64" cy="64" r="10" fill="#7aa7ff" opacity="0.8"/></svg>',
+    harden_body: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Harden Body"><rect width="128" height="128" rx="22" fill="#171611"/><path d="M64 20l12 24 26 4-19 18 4 26-23-12-23 12 4-26-19-18 26-4 12-24Z" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><path d="M64 44v40M44 64h40" stroke="#d9b56d" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
+    reinforce_defense: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Reinforce Defense"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M64 20l40 16v28c0 20-16 36-40 44-24-8-40-24-40-44V36l40-16Z" fill="#1b2d2b" stroke="#65e3ce" stroke-width="3"/><path d="M64 36v56M40 64h48" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.6"/></svg>',
+    expand_party: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Expand Party"><rect width="128" height="128" rx="22" fill="#17140f"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#d9b56d" opacity="0.12" stroke="#d9b56d" stroke-width="4"/><circle cx="46" cy="54" r="10" fill="#d9b56d" opacity="0.7"/><circle cx="64" cy="50" r="10" fill="#d9b56d" opacity="0.7"/><circle cx="82" cy="54" r="10" fill="#d9b56d" opacity="0.7"/><path d="M36 40l10 12M92 40l-10 12" stroke="#d9b56d" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
+    passive_slot: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Passive Slot"><rect width="128" height="128" rx="22" fill="#0d1320"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#7aa7ff" opacity="0.12" stroke="#7aa7ff" stroke-width="4"/><circle cx="46" cy="54" r="10" fill="#7aa7ff" opacity="0.7"/><circle cx="64" cy="50" r="10" fill="#7aa7ff" opacity="0.7"/><circle cx="82" cy="54" r="10" fill="#7aa7ff" opacity="0.7"/><path d="M36 40l10 12M92 40l-10 12" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
+    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Upgrade"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
+  };
+  return icons[id] || icons.default;
+}
+
+function renderNextTab() {
+  const nexts = state.next_actions || [];
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Next actions</h3><span>Story checkpoints</span></div>
+      <p class="tab-hint">Next actions are major story checkpoints that require significant resources. Completing them advances the narrative.</p>
+      <div class="action-list">
+        ${nexts.map(nextRow).join("") || '<p class="empty-tab">No next actions available.</p>'}
+      </div>
+    </section>`;
+}
+
+function nextRow(action) {
+  const costParts = Object.entries(action.cost || {}).map(([res, cost]) => `${cost} ${res.replace('_', ' ').title()}`);
+  return `
+    <article class="action-item next-item ${action.completed ? "completed" : ""}">
+      <div class="action-art">${svgForNext(action.id)}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(action.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${costParts.join(" · ")}</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(action.description)}</p>
+        <div class="action-footer">
+          ${action.completed ? '<span class="completed-label">✓ Completed</span>' : ''}
+          <div class="action-controls">
+            <button class="action-button" data-next="${escapeHtml(action.id)}" ${action.completed || !action.can_afford ? "disabled" : ""}>
+              ${action.completed ? "Done" : "Complete"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function svgForNext(id) {
+  const icons = {
+    next_escape: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Escape"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M64 20l40 16v28c0 20-16 36-40 44-24-8-40-24-40-44V36l40-16Z" fill="#1b2d2b" stroke="#65e3ce" stroke-width="3"/><path d="M48 64l12 12 20-24" stroke="#65e3ce" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+    next_village: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Village"><rect width="128" height="128" rx="22" fill="#171611"/><path d="M20 90h88v18H20z" fill="#1a2d24"/><path d="M34 90V56l28-24 28 24v34" fill="#20372d" stroke="#d9b56d" stroke-width="3"/><path d="M48 90V68h32v22" fill="#d9b56d" opacity="0.18"/><path d="M60 43h8v12h-8z" fill="#d9b56d" opacity="0.8"/></svg>',
+    next_capital: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Capital"><rect width="128" height="128" rx="22" fill="#0d1320"/><path d="M24 96h80M32 96V56l32-20 32 20v40" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M48 96V68h32v28" fill="#7aa7ff" opacity="0.2"/><path d="M64 36v20" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round"/></svg>',
+    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Next"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
+  };
+  return icons[id] || icons.default;
+}
+
+function renderResearchTab() {
+  const summonables = state.summonable_allies || [];
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Research & Summoning</h3><span>${state.research} Research available</span></div>
+      <p class="tab-hint">Defeat enemies to earn Research. Accumulate enough to permanently summon monsters as allies.</p>
+      <div class="action-list">
+        ${summonables.map(summonRow).join("") || '<p class="empty-tab">All known creatures have been summoned!</p>'}
+      </div>
+    </section>`;
+}
+
+function summonRow(ally) {
+  return `
+    <article class="action-item summon-item">
+      <div class="action-art">${svgForSummon(ally.id)}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(ally.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${ally.cost} Research</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(ally.species)} · ${escapeHtml(ally.role)}</p>
+        <div class="action-footer">
+          <div class="action-controls">
+            <button class="action-button" data-summon="${escapeHtml(ally.id)}" ${!ally.can_afford ? "disabled" : ""}>Summon</button>
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function svgForSummon(id) {
+  const icons = {
+    cave_bat: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Bat"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M64 30c-20 0-36 16-36 38s16 38 36 38 36-16 36-38-16-38-36-38Z" fill="#172a2a" stroke="#65e3ce" stroke-width="3"/><circle cx="64" cy="64" r="9" fill="#65e3ce"/><path d="M64 18v18M64 110v18M18 64h18M92 64h18" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
+    acid_slug: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Slug"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M32 80c8-20 20-30 32-30s24 10 32 30" fill="#65e3ce" opacity="0.15" stroke="#65e3ce" stroke-width="4"/><circle cx="64" cy="50" r="14" fill="#65e3ce" opacity="0.8"/><path d="M52 40c4-8 10-12 18-12" stroke="#dffdf6" stroke-width="4" stroke-linecap="round" fill="none"/></svg>',
+    armored_spider: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Spider"><rect width="128" height="128" rx="22" fill="#0b1415"/><circle cx="64" cy="64" r="20" fill="#172a2a" stroke="#65e3ce" stroke-width="3"/><path d="M24 44l16 8M104 44l-16 8M24 84l16-8M104 84l-16-8M44 24l8 16M84 24l-8 16M44 104l8-16M84 104l-8-16" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
+    cave_centipede: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Centipede"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M20 64h88" stroke="#65e3ce" stroke-width="6" stroke-linecap="round"/><path d="M28 44l8 20-8 20M48 40l8 24-8 24M68 40l8 24-8 24M88 44l8 20-8 20" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.7"/><circle cx="100" cy="64" r="8" fill="#65e3ce"/></svg>',
+    horned_rabbit: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Rabbit"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="70" r="22" fill="#d9b56d" opacity="0.8"/><path d="M50 52l-8-20M78 52l8-20" stroke="#d9b56d" stroke-width="4" stroke-linecap="round"/><circle cx="56" cy="66" r="3" fill="#171611"/><circle cx="72" cy="66" r="3" fill="#171611"/></svg>',
+    direwolf: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Wolf"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#65e3ce" opacity="0.12" stroke="#65e3ce" stroke-width="4"/><circle cx="46" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="64" cy="50" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="82" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><path d="M36 40l10 12M92 40l-10 12" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
+    forest_lizard: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Lizard"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M32 90c12-28 24-42 48-42s36 14 48 42c-8 18-24 30-48 30s-40-12-48-30Z" fill="#1c1719" stroke="#65e3ce" stroke-width="3"/><path d="M44 66l18-20M116 66l-18-20M58 44l8 18M102 44l-8 18" stroke="#65e3ce" stroke-width="3" stroke-linecap="round"/><circle cx="62" cy="86" r="4" fill="#65e3ce"/><circle cx="98" cy="86" r="4" fill="#65e3ce"/></svg>',
+    fang_captain: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fang Captain"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#65e3ce" opacity="0.2" stroke="#65e3ce" stroke-width="4"/><circle cx="46" cy="54" r="12" fill="#65e3ce" opacity="0.8"/><circle cx="64" cy="50" r="12" fill="#65e3ce" opacity="0.8"/><circle cx="82" cy="54" r="12" fill="#65e3ce" opacity="0.8"/><path d="M36 40l10 12M92 40l-10 12" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.8"/><path d="M54 98l10-18 10 18" stroke="#dffdf6" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+    marsh_frog: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Frog"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="48" cy="60" r="16" fill="#65e3ce" opacity="0.7"/><circle cx="80" cy="60" r="16" fill="#65e3ce" opacity="0.7"/><path d="M40 76c8 12 40 12 48 0" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" fill="none"/><circle cx="44" cy="56" r="3" fill="#0d1515"/><circle cx="76" cy="56" r="3" fill="#0d1515"/></svg>',
+    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Summon"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
+  };
+  return icons[id] || icons.default;
+}
+
+function renderPrestigeTab() {
+  const ritual = state.dark_ritual || {};
+  const astral = state.astral_upgrades || [];
+  const classes = state.reincarnation_classes || {};
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Dark Ritual</h3><span>Soft prestige</span></div>
+      <p class="tab-hint">${escapeHtml(ritual.description || "")}</p>
+      <div class="prestige-card">
+        <div class="prestige-stats">
+          <div><strong>${state.habit_points}</strong><span>Habit Points</span></div>
+          <div><strong>${state.inspiration}</strong><span>Inspiration</span></div>
+          <div><strong>${state.level}</strong><span>Current Level</span></div>
+        </div>
+        <div class="prestige-gains">
+          <span>Gain: <b>+${ritual.habit_gain || 0}</b> Habits · <b>+${ritual.inspiration_gain || 0}</b> Inspiration</span>
+        </div>
+        <button class="primary-button ritual-button" data-ritual ${!ritual.can_perform ? "disabled" : ""}>
+          ${ritual.can_perform ? "Perform Dark Ritual" : `Requires Level ${ritual.min_level}`}
+        </button>
+      </div>
+    </section>
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Astral World</h3><span>Spend Inspiration</span></div>
+      <div class="action-list">
+        ${astral.map(astralRow).join("")}
+      </div>
+    </section>
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Reincarnation</h3><span>Hard prestige</span></div>
+      <p class="tab-hint">Reincarnation resets almost everything but grants permanent class bonuses. Requires level 10.</p>
+      <div class="action-list">
+        ${Object.entries(classes).map(([id, cls]) => reincarnationRow(id, cls)).join("")}
+      </div>
+    </section>`;
+}
+
+function astralRow(upgrade) {
+  return `
+    <article class="action-item astral-item">
+      <div class="action-art">${svgForAstral(upgrade.id)}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(upgrade.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${upgrade.cost} Inspiration</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(upgrade.description)}</p>
+        <div class="action-footer">
+          <span class="action-reward">Level ${upgrade.level}/${upgrade.max_level}</span>
+          <div class="action-controls">
+            <button class="action-button" data-astral="${escapeHtml(upgrade.id)}" ${upgrade.maxed || !upgrade.can_afford ? "disabled" : ""}>
+              ${upgrade.maxed ? "Maxed" : "Upgrade"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function svgForAstral(id) {
+  const icons = {
+    doppelganger: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Doppelganger"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="48" cy="64" r="20" fill="#7aa7ff" opacity="0.6"/><circle cx="80" cy="64" r="20" fill="#7aa7ff" opacity="0.3"/><path d="M48 44v40M80 44v40" stroke="#7aa7ff" stroke-width="3" stroke-linecap="round" opacity="0.5"/></svg>',
+    soul_amplifier: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Soul Amplifier"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="24" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M64 24v18M64 86v18M24 64h18M86 64h18" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round"/><circle cx="64" cy="64" r="8" fill="#7aa7ff" opacity="0.8"/></svg>',
+    eternal_insight: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Eternal Insight"><rect width="128" height="128" rx="22" fill="#0d1320"/><path d="M64 20l12 24 26 4-19 18 4 26-23-12-23 12 4-26-19-18 26-4 12-24Z" fill="#7aa7ff" opacity="0.2" stroke="#7aa7ff" stroke-width="3"/><circle cx="64" cy="64" r="6" fill="#7aa7ff" opacity="0.8"/></svg>',
+    golden_touch: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Golden Touch"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="64" r="24" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><path d="M64 24v18M64 86v18M24 64h18M86 64h18" stroke="#d9b56d" stroke-width="4" stroke-linecap="round"/><circle cx="64" cy="64" r="8" fill="#d9b56d" opacity="0.8"/></svg>',
+    predator_essence: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Predator Essence"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M64 20l40 16v28c0 20-16 36-40 44-24-8-40-24-40-44V36l40-16Z" fill="#1b2d2b" stroke="#65e3ce" stroke-width="3"/><path d="M48 64l12 12 20-24" stroke="#65e3ce" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+    unbreakable_slime: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Unbreakable Slime"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="30" fill="#132a2c" stroke="#65e3ce" stroke-width="3"/><path d="M64 24c-18 21-28 34-28 48 0 16 12 28 28 28s28-12 28-28c0-14-10-27-28-48Z" fill="#8ff2df" opacity="0.3"/><path d="M64 44v40M44 64h40" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.6"/></svg>',
+    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Astral"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
+  };
+  return icons[id] || icons.default;
+}
+
+function reincarnationRow(id, cls) {
+  const bonusParts = Object.entries(cls.base_bonus || {}).map(([stat, amount]) => `+${amount} ${stat.replace('_', ' ').title()}`);
+  return `
+    <article class="action-item reincarnation-item">
+      <div class="action-art">${svgForReincarnation(id)}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(cls.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${bonusParts.join(" · ")}</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(cls.description)}</p>
+        <div class="action-footer">
+          <div class="action-controls">
+            <button class="action-button" data-reincarnate="${escapeHtml(id)}" ${!state.can_reincarnate ? "disabled" : ""}>
+              ${state.can_reincarnate ? "Reincarnate" : "Requires Level 10"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function svgForReincarnation(id) {
+  const icons = {
+    warrior: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Warrior"><rect width="128" height="128" rx="22" fill="#171611"/><path d="M64 20l40 16v28c0 20-16 36-40 44-24-8-40-24-40-44V36l40-16Z" fill="#1b2d2b" stroke="#d9b56d" stroke-width="3"/><path d="M48 64l12 12 20-24" stroke="#d9b56d" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+    sorcerer: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sorcerer"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="24" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M64 24v18M64 86v18M24 64h18M86 64h18" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round"/><circle cx="64" cy="64" r="8" fill="#7aa7ff" opacity="0.8"/></svg>',
+    tamer: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Tamer"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#65e3ce" opacity="0.12" stroke="#65e3ce" stroke-width="4"/><circle cx="46" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="64" cy="50" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="82" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><path d="M36 40l10 12M92 40l-10 12" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
+    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Class"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
+  };
+  return icons[id] || icons.default;
+}
+
+function renderSinsTab() {
+  const sins = state.sins || [];
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Sin System</h3><span>Unlock at higher levels</span></div>
+      <p class="tab-hint">The Sin System unlocks powerful passive modifiers as you grow stronger.</p>
+      <div class="action-list">
+        ${sins.map(sinRow).join("")}
+      </div>
+    </section>`;
+}
+
+function sinRow(sin) {
+  return `
+    <article class="action-item sin-item ${sin.unlocked ? "unlocked" : ""}">
+      <div class="action-art">${svgForSin(sin.id)}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(sin.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${sin.unlocked ? `Level ${sin.level}` : `Unlocks Lv. ${sin.unlock_level}`}</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(sin.description)}</p>
+        <div class="action-footer">
+          <div class="action-controls">
+            ${sin.unlocked
+              ? `<button class="action-button" data-sin-level="${escapeHtml(sin.id)}">Level Up (${10 * sin.level} ✦)</button>`
+              : `<button class="action-button" data-sin-unlock="${escapeHtml(sin.id)}" ${!sin.can_unlock ? "disabled" : ""}>Unlock</button>`}
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function svgForSin(id) {
+  const icons = {
+    gluttony: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gluttony"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="64" r="30" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><path d="M48 64h32M56 52h16M56 76h16" stroke="#d9b56d" stroke-width="4" stroke-linecap="round"/></svg>',
+    sloth: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sloth"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="30" fill="#65e3ce" opacity="0.2" stroke="#65e3ce" stroke-width="3"/><path d="M48 64h32" stroke="#65e3ce" stroke-width="4" stroke-linecap="round"/><path d="M64 48v32" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.5"/></svg>',
+    greed: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Greed"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="64" r="30" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><path d="M64 40v48M40 64h48" stroke="#d9b56d" stroke-width="4" stroke-linecap="round"/><circle cx="64" cy="64" r="8" fill="#d9b56d" opacity="0.8"/></svg>',
+    pride: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pride"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="30" fill="#7aa7ff" opacity="0.2" stroke="#7aa7ff" stroke-width="3"/><path d="M64 20l12 24 26 4-19 18 4 26-23-12-23 12 4-26-19-18 26-4 12-24Z" fill="#7aa7ff" opacity="0.3"/></svg>',
+    envy: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Envy"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="30" fill="#65e3ce" opacity="0.2" stroke="#65e3ce" stroke-width="3"/><path d="M48 56l16 16 16-16" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sin"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
+  };
+  return icons[id] || icons.default;
+}
+
+function renderCombatTab() {
+  return `
+    <section class="actions-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Combat</h3><span>${state.total_victories} victories</span></div>
+      <p class="tab-hint">Choose a region to begin an expedition. Defeat all encounters to clear the region.</p>
+      <div class="regions">${state.zones.map(regionCard).join("")}</div>
+    </section>`;
+}
+
+function renderStoryTab() {
+  return `
+    <section class="stories-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Stories</h3><span>Discovered but not yet started</span></div>
+      <div class="story-list">${(state.available_stories || []).map(s => storyRow(s)).join("") || '<p class="empty-tab">No stories available yet. Keep playing to discover new ones.</p>'}</div>
+    </section>
+    <section class="log-section">
+      <div class="section-title"><h3><span class="title-ornament">◆</span> Living chronicle</h3><span>${state.total_victories} victories recorded</span></div>
+      <div class="log-list">${[...state.log].reverse().map(logEntry).join("")}</div>
+    </section>`;
 }
 
 function meter(value, max, type, label) {
@@ -335,9 +811,10 @@ function svgForAction(id) {
     gather_dew: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gather dew"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="36" fill="#132a2c" stroke="#5dd9c7" stroke-width="3" opacity="0.8"/><path d="M64 24c-18 21-28 34-28 48 0 16 12 28 28 28s28-12 28-28c0-14-10-27-28-48Z" fill="#8ff2df"/><path d="M64 38c-8 13-16 22-16 29 0 9 7 16 16 16s16-7 16-16c0-7-8-16-16-29Z" fill="#dffdf6" opacity="0.42"/><path d="M52 88c7 5 13 8 12 17M76 88c-7 6-13 9-12 17" stroke="#9cf7e6" stroke-width="5" stroke-linecap="round" opacity="0.8"/></svg>',
     analyze_moss: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Analyze moss"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="34" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M40 66c8-20 20-30 34-30 15 0 26 8 34 24-6 4-10 7-15 10-9-8-18-11-30-10-7 1-14 4-23 6Z" fill="#67a6ff" opacity="0.8"/><path d="M44 74c10-7 20-10 32-8 9 1 17 5 25 12" stroke="#dce9ff" stroke-width="5" stroke-linecap="round" fill="none"/><circle cx="46" cy="72" r="5" fill="#dce9ff"/><path d="M78 38l15 27M85 38l19 13M68 45l18 23" stroke="#dce9ff" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
     shape_body: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Shape body"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="52" r="22" fill="#f1c574"/><path d="M34 95c8-20 24-30 30-30s22 10 30 30" fill="#f1c574" opacity="0.9"/><path d="M54 36c6-13 18-18 30-14" stroke="#ffd994" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.8"/><path d="M36 54c8-15 18-21 28-23" stroke="#ffd994" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.5"/><path d="M92 54c-8-15-18-21-28-23" stroke="#ffd994" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.5"/></svg>',
+    follow_roar: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Follow roar"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M64 20l40 16v28c0 20-16 36-40 44-24-8-40-24-40-44V36l40-16Z" fill="#1b2d2b" stroke="#65e3ce" stroke-width="3"/><path d="M48 64l12 12 20-24" stroke="#65e3ce" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
     silent_scout: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Silent scout"><rect width="128" height="128" rx="22" fill="#0b1415"/><circle cx="64" cy="64" r="30" fill="#1b2d2b" stroke="#8de0d0" stroke-width="3"/><path d="M64 26c-20 0-36 16-36 38s16 38 36 38 36-16 36-38-16-38-36-38Z" fill="#172a2a" stroke="#8de0d0" stroke-width="3"/><circle cx="64" cy="64" r="9" fill="#8de0d0"/><path d="M64 18v18M64 110v18M18 64h18M92 64h18" stroke="#8de0d0" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
-    talk_goblins: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Talk to goblins"><rect width="128" height="128" rx="22" fill="#171612"/><path d="M28 38h52c12 0 22 10 22 22v15c0 12-10 22-22 22H58l-16 14v-14H28c-12 0-22-10-22-22V60c0-12 10-22 22-22Z" fill="#f5d081" opacity="0.15" stroke="#f5d081" stroke-width="4"/><path d="M40 58h32M40 74h22" stroke="#f5d081" stroke-width="5" stroke-linecap="round"/><circle cx="96" cy="52" r="18" fill="#f5d081" opacity="0.8"/><path d="M89 49l7 7 14-15" stroke="#171612" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     magicule_circulation: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Magicule circulation"><rect width="128" height="128" rx="22" fill="#0d1618"/><circle cx="64" cy="64" r="34" fill="#112a2d" stroke="#8fe7d3" stroke-width="3"/><path d="M64 25v18M64 85v18M25 64h18M85 64h18" stroke="#8fe7d3" stroke-width="5" stroke-linecap="round"/><circle cx="64" cy="64" r="11" fill="#8fe7d3" opacity="0.95"/><path d="M42 42l12 12M86 86l12 12M42 86l12-12M86 42l12-12" stroke="#c8fff1" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
+    talk_goblins: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Talk to goblins"><rect width="128" height="128" rx="22" fill="#171612"/><path d="M28 38h52c12 0 22 10 22 22v15c0 12-10 22-22 22H58l-16 14v-14H28c-12 0-22-10-22-22V60c0-12 10-22 22-22Z" fill="#f5d081" opacity="0.15" stroke="#f5d081" stroke-width="4"/><path d="M40 58h32M40 74h22" stroke="#f5d081" stroke-width="5" stroke-linecap="round"/><circle cx="96" cy="52" r="18" fill="#f5d081" opacity="0.8"/><path d="M89 49l7 7 14-15" stroke="#171612" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     train_allies: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Train allies"><rect width="128" height="128" rx="22" fill="#17140f"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#f0c974" opacity="0.18" stroke="#f0c974" stroke-width="4"/><circle cx="46" cy="54" r="12" fill="#f0c974"/><circle cx="64" cy="50" r="12" fill="#f0c974"/><circle cx="82" cy="54" r="12" fill="#f0c974"/><path d="M36 40l10 12M92 40l-10 12" stroke="#f0c974" stroke-width="4" stroke-linecap="round" opacity="0.8"/><path d="M54 98l10-18 10 18" stroke="#f7df9d" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
     default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Default action"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
   };
@@ -462,13 +939,16 @@ function logEntry(item) {
 }
 
 function regionCard(zone) {
-  const label = zone.boss_defeated ? "Explore again" : zone.boss_ready ? `Challenge ${zone.boss}` : "Enter region";
-  const progress = zone.boss_defeated ? "Boss defeated" : `${Math.min(zone.clears, zone.target)} / ${zone.target} sightings`;
+  const total = zone.total_encounters || 5;
+  const clears = zone.runs || 0;
+  const bossReady = clears > 0 && clears % total === 0;
+  const label = bossReady ? `Challenge ${zone.boss}` : "Enter region";
+  const progress = `${Math.min(clears, total)} / ${total} sightings`;
   return `
     <article class="region-card ${zone.unlocked ? "" : "locked"}">
       <strong>${escapeHtml(zone.name)}</strong>
       <p>${escapeHtml(zone.subtitle)}</p>
-      <div class="region-progress"><span>${escapeHtml(progress)}</span>${zone.boss_defeated ? "<span>✓</span>" : ""}</div>
+      <div class="region-progress"><span>${escapeHtml(progress)}</span>${bossReady ? "<span>⚔</span>" : ""}</div>
       <button class="zone-button" data-zone="${escapeHtml(zone.id)}" ${!zone.unlocked || !!state.battle ? "disabled" : ""}>${escapeHtml(label)}</button>
     </article>`;
 }
@@ -544,6 +1024,67 @@ function bindGameEvents() {
   app.querySelector("#new-chronicle")?.addEventListener("click", async () => {
     if (window.confirm("Erase this local save and choose a new origin?")) await mutate("/api/reset");
   });
+
+  // --- Your Chronicle tab navigation ---
+  app.querySelectorAll(".tab-button").forEach((btn) => btn.addEventListener("click", () => {
+    activeTab = btn.dataset.tab;
+    render();
+  }));
+
+  // --- Loop actions ---
+  app.querySelectorAll("[data-loop-start]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/loop/start", { action: btn.dataset.loopStart }))
+  );
+  app.querySelectorAll("[data-loop-stop]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/loop/stop", { action: btn.dataset.loopStop }))
+  );
+
+  // --- Instant actions ---
+  app.querySelectorAll("[data-instant]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/instant", { action: btn.dataset.instant }))
+  );
+
+  // --- Upgrade actions ---
+  app.querySelectorAll("[data-upgrade]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/upgrade", { action: btn.dataset.upgrade }))
+  );
+
+  // --- Next actions ---
+  app.querySelectorAll("[data-next]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/next", { action: btn.dataset.next }))
+  );
+
+  // --- Research / Summoning ---
+  app.querySelectorAll("[data-summon]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/summon", { ally: btn.dataset.summon }))
+  );
+
+  // --- Prestige ---
+  app.querySelectorAll("[data-ritual]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (window.confirm("Perform the Dark Ritual? This resets your level, resources, and progress in exchange for permanent Habit Points and Inspiration.")) {
+        mutate("/api/ritual");
+      }
+    })
+  );
+  app.querySelectorAll("[data-astral]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/astral", { upgrade: btn.dataset.astral }))
+  );
+  app.querySelectorAll("[data-reincarnate]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (window.confirm(`Reincarnate as a ${btn.dataset.reincarnate}? This resets almost everything but grants permanent class bonuses.`)) {
+        mutate("/api/reincarnate", { class: btn.dataset.reincarnate });
+      }
+    })
+  );
+
+  // --- Sins ---
+  app.querySelectorAll("[data-sin-unlock]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/sin/unlock", { sin: btn.dataset.sinUnlock }))
+  );
+  app.querySelectorAll("[data-sin-level]").forEach((btn) =>
+    btn.addEventListener("click", () => mutate("/api/sin/level", { sin: btn.dataset.sinLevel }))
+  );
 }
 
 function renderChoice() {
@@ -619,4 +1160,3 @@ async function boot() {
 }
 
 boot();
-
