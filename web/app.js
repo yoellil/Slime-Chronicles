@@ -374,15 +374,20 @@ function actionRow(action) {
     ? `<div class="action-buttons"><button class="action-cancel" data-cancel>Cancel</button></div>`
     : `<div class="action-buttons">${queuedBadge}<button class="action-button" data-action="${escapeHtml(action.id)}" data-count="1" ${disabled ? "disabled" : ""}>×1</button><button class="action-button" data-action="${escapeHtml(action.id)}" data-count="5" ${disabled ? "disabled" : ""}>×5</button></div>`;
   return `
-    <article class="action-item">
-      <div class="action-left">${svgForAction(action.id)}</div>
-      <div class="action-main">
-        <strong>${escapeHtml(action.name)}</strong>
-        <p>${escapeHtml(action.description)}</p>
-        <div class="action-cost">${action.cost} Focus · +${action.xp} XP · +${action.resource} ${escapeHtml(state.resource_label)}</div>
-        ${progressHtml}
+    <article class="action-item action-card" data-action-id="${escapeHtml(action.id)}">
+      ${queueCount > 0 ? `<span class="card-queued">${queueCount}</span>` : ""}
+      <div class="action-art">${svgForAction(action.id)}</div>
+      <div class="action-content">
+        <div class="action-header">
+          <strong>${escapeHtml(action.name)}</strong>
+          <div class="action-meta"><span class="action-cost">${action.cost} Focus</span><span class="action-reward">+${action.resource} ${escapeHtml(state.resource_label)}</span></div>
+        </div>
+        <p class="action-desc">${escapeHtml(action.description)}</p>
+        <div class="action-footer">
+          ${progressHtml}
+          <div class="action-controls">${buttons}</div>
+        </div>
       </div>
-      <div class="action-right">${buttons}</div>
     </article>`;
 }
 
