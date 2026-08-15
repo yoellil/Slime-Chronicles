@@ -154,35 +154,44 @@ function playBattleEvents(events) {
 }
 
 function showPopupText(targetIndex, text, isPlayer) {
-  const container = isPlayer ? document.querySelector('.profile-orb') : (document.querySelector(`.enemy-list-item[data-target="${targetIndex}"]`) || document.querySelector('.enemy-sigil'));
+  const container = isPlayer ? document.querySelector('.profile-orb') : (document.querySelector(`.enemy-list-item[data-target="${targetIndex}"] .enemy-icon`) || document.querySelector('.enemy-sigil'));
   if (!container) return;
   const el = document.createElement('div');
   el.className = 'damage-pop';
   el.textContent = text;
-  // position centrally within container
-  el.style.left = '50%';
-  el.style.top = '10%';
-  el.style.transform = 'translateX(-50%)';
   container.style.position = container.style.position || 'relative';
   container.appendChild(el);
-  setTimeout(() => el.remove(), 1100);
+  // position after layout so offsetWidth/Height are available
+  requestAnimationFrame(() => {
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
+    const ew = el.offsetWidth;
+    const eh = el.offsetHeight;
+    el.style.left = `${Math.max(6, Math.round((cw - ew) / 2))}px`;
+    el.style.top = `${Math.max(6, Math.round(ch * 0.08))}px`;
+    el.style.transform = '';
+  });
+  setTimeout(() => el.remove(), 1200);
 }
 
 function showDamagePopup(targetIndex, text, isPlayer) {
-  const container = isPlayer ? document.querySelector('.profile-orb') : (document.querySelector(`.enemy-list-item[data-target="${targetIndex}"]`) || document.querySelector('.enemy-sigil'));
+  const container = isPlayer ? document.querySelector('.profile-orb') : (document.querySelector(`.enemy-list-item[data-target="${targetIndex}"] .enemy-icon`) || document.querySelector('.enemy-sigil'));
   if (!container) return;
-  const rect = container.getBoundingClientRect();
-  const rootRect = document.documentElement.getBoundingClientRect();
   const el = document.createElement('div');
   el.className = 'damage-pop';
   el.textContent = text;
-  // absolute-position relative to container
   container.style.position = container.style.position || 'relative';
-  el.style.left = '50%';
-  el.style.top = '20%';
-  el.style.transform = 'translateX(-50%)';
   container.appendChild(el);
-  setTimeout(() => el.remove(), 1100);
+  requestAnimationFrame(() => {
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
+    const ew = el.offsetWidth;
+    const eh = el.offsetHeight;
+    el.style.left = `${Math.max(6, Math.round((cw - ew) / 2))}px`;
+    el.style.top = `${Math.max(6, Math.round(ch * 0.18))}px`;
+    el.style.transform = '';
+  });
+  setTimeout(() => el.remove(), 1200);
 }
 
 function renderLanding() {
@@ -434,6 +443,15 @@ function enemySigilSvg(name = "Enemy") {
   </g></svg></div>`;
 }
 
+// small thumb SVG used inside enemy lists to avoid font-rendering issues
+function enemyThumbSvg(name) {
+  const lower = String(name || '').toLowerCase();
+  let color = '#ef8674';
+  if (/lizard|basilisk|reptile|serpent/i.test(lower)) color = '#f4c08d';
+  if (/goblin|wolf|orc|bandit/i.test(lower)) color = '#8de0d0';
+  return `<svg class="enemy-thumb" width="36" height="36" viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><circle cx="80" cy="80" r="36" fill="#0f1416" stroke="${color}"/><path d="M64 68c6-6 12-8 24-6" stroke="${color}" stroke-width="4" stroke-linecap="round"/><circle cx="70" cy="84" r="4" fill="${color}"/><circle cx="96" cy="84" r="4" fill="${color}"/></g></svg>`;
+}
+
 function logEntry(item) {
   return `<div class="log-entry ${escapeHtml(item.kind)}">${escapeHtml(item.text)}</div>`;
 }
@@ -476,7 +494,7 @@ function battlePanel() {
     <div class="enemy-info">
       <div class="enemy-title"><strong>${escapeHtml(current.name || title)}</strong><span>${escapeHtml(subtitle)}</span></div>
       ${bar("Enemy vitality", current.hp || 0, current.max_hp || 1, "hp")}
-      ${enemies.length > 1 ? `<div class="enemy-list">${enemies.map((e, i) => `<button class="enemy-list-item${(selectedEnemyIndex === i) ? ' selected' : ''}" data-target="${i}"><span class="enemy-icon">${escapeHtml((e.name || '').charAt(0).toUpperCase())}</span><span class="enemy-label">${escapeHtml(e.name)}</span><span class="enemy-hp">${e.hp}/${e.max_hp}</span></button>`).join("")}</div>` : ""}
+      ${enemies.length > 1 ? `<div class="enemy-list">${enemies.map((e, i) => `<button class="enemy-list-item${(selectedEnemyIndex === i) ? ' selected' : ''}" data-target="${i}"><span class="enemy-icon">${enemyThumbSvg(e.name)}</span><span class="enemy-label">${escapeHtml(e.name)}</span><span class="enemy-hp">${e.hp}/${e.max_hp}</span></button>`).join("")}</div>` : ""}
     </div>
     <div class="skill-list">${state.skills.map(skillButton).join("")}</div>
     <div class="battle-tools"><button class="ghost-button" id="flee-button">Withdraw</button></div>`;
