@@ -811,3 +811,44 @@ def hero_public() -> dict:
 def recruitment_chance(strength: int) -> float:
     """Stronger creatures are more difficult to persuade after battle."""
     return round(max(0.04, min(0.32, 0.36 - (strength * 0.015))), 3)
+# ============================================================
+# Story wiring (no story text lives here)
+# ============================================================
+PHASE_ORDER = [
+    "awakening", "first_steps", "seek_dragon", "learn_from_friend", "protect_village",
+    "chapter_one_complete", "dwarf_kingdom", "orc_lord_arc", "lizardmen_alliance",
+    "tempest_federation", "falmuth_relations", "demon_lord_awakening", "walpurgis",
+    "farmus_invasion", "harvest_festival", "epilogue",
+]
+
+# What entering a phase through a checkpoint opens up, so no route can soft-lock.
+PHASE_UNLOCKS = {
+    "seek_dragon": {"zones": ["sealed_cave"], "actions": ["follow_roar"]},
+    "protect_village": {"zones": ["forest_road"], "actions": ["talk_goblins"]},
+    "dwarf_kingdom": {"zones": ["dwargon"]},
+    "orc_lord_arc": {"zones": ["orc_territory"]},
+    "lizardmen_alliance": {"zones": ["lizardmen_territory"]},
+    "tempest_federation": {"zones": ["tempest_forest"]},
+    "falmuth_relations": {"zones": ["falmuth"]},
+    "walpurgis": {"zones": ["demon_lord_domain"]},
+}
+
+# Sin effects: which gain each sin amplifies, and by how much per level.
+SIN_EFFECTS = {
+    "gluttony": ("magicules", 0.05, "Devoured essence yields more Magicules."),
+    "sloth": ("loops", 0.10, "Background loops produce more per cycle."),
+    "greed": ("gold", 0.10, "Gold gains are amplified."),
+    "pride": ("xp", 0.10, "XP gains are amplified."),
+    "envy": ("research", 0.10, "Research gains are amplified."),
+    "wrath": ("attack", 0.08, "Attack power is amplified in combat."),
+    "lust": ("recruit", 0.15, "Recruitment chances are amplified."),
+}
+for _sin_id, (_effect, _per_level, _text) in SIN_EFFECTS.items():
+    SINS[_sin_id].update(effect=_effect, per_level=_per_level, description=_text)
+
+# Each Habit Point permanently adds this much to Magicule, Gold and XP gains.
+HABIT_BONUS = 0.02
+
+
+# The branching story layer edits STORY_NODES and ACTIONS in place, so it must load last.
+from .story_extra import PATHS, PATH_TRIGGERS  # noqa: E402,F401

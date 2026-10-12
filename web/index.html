@@ -3,30 +3,30 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#080a0d" />
-    <meta
-      name="description"
-    content="Slime Chronicles — an incremental, narrative-driven fan RPG focused on Rimuru and allied creatures."
-    />
-    <title>Slime Chronicles</title>
+    <meta name="theme-color" content="#0a1113" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="Chronicles of Reincarnation: an incremental RPG about a nameless slime who grows into the founder of a nation." />
+    <title>Chronicles of Reincarnation</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Inter:wght@400;500;600;700;750;800&display=swap"
-      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Figtree:wght@400;500;600;700&display=swap"
+      rel="stylesheet" media="print" onload="this.media='all'"
     />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="ambient" aria-hidden="true"></div>
     <main id="app" aria-live="polite">
-      <section class="loading-screen">
-        <p class="eyebrow">THE RECORD IS OPENING</p>
-        <div class="loading-mark"></div>
+      <section class="boot">
+        <div class="boot-orb"></div>
+        <p>The record is opening</p>
       </section>
     </main>
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+    <div id="fx" class="fx" aria-hidden="true"></div>
+    <div id="overlay" class="overlay" hidden></div>
+    <script src="/art.js"></script>
     <script src="/app.js" defer></script>
+    <script src="/views.js" defer></script>
   </body>
 </html>
-

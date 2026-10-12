@@ -11,6 +11,7 @@ import argparse
 import json
 import mimetypes
 import secrets
+import threading
 import webbrowser
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -27,6 +28,8 @@ WEB_ROOT = ROOT / "web"
 STORE = ChronicleStore(ROOT / "data" / "chronicles.db")
 ENGINE = GameEngine()
 SESSION_COOKIE = "chronicle_session"
+# Requests load, change and save the same row, so they must not interleave (a poll could undo a click).
+STATE_LOCK = threading.Lock()
 
 
 class ChronicleHandler(BaseHTTPRequestHandler):
@@ -36,17 +39,22 @@ class ChronicleHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/state":
             session_id, is_new = self._session()
-            state = STORE.load(session_id)
-            if state:
-                payload = ENGINE.refresh(state)
-                STORE.save(session_id, state)
-            else:
-                payload = ENGINE.landing_state()
+            with STATE_LOCK:
+                state = STORE.load(session_id)
+                if state:
+                    payload = ENGINE.refresh(state)
+                    STORE.save(session_id, state)
+                else:
+                    payload = ENGINE.landing_state()
             self._json(payload, cookie=session_id if is_new else None)
             return
         self._static(path)
 
     def do_POST(self) -> None:  # noqa: N802
+        with STATE_LOCK:
+            self._post()
+
+    def _post(self) -> None:
         path = urlparse(self.path).path
         session_id, is_new = self._session()
         try:
@@ -68,6 +76,8 @@ class ChronicleHandler(BaseHTTPRequestHandler):
                     action_id = str(body.get("action", ""))
                     count = int(body.get("count", 1) or 1)
                     result = ENGINE.enqueue_action(state, action_id, count)
+                elif path == "/api/action/auto":
+                    result = ENGINE.toggle_auto_action(state, str(body.get("action", "")))
                 elif path == "/api/action/cancel":
                     result = ENGINE.cancel_activity(state)
                 elif path == "/api/combat/start":
@@ -84,7 +94,8 @@ class ChronicleHandler(BaseHTTPRequestHandler):
                 elif path == "/api/rest":
                     result = ENGINE.rest(state)
                 elif path == "/api/choice":
-                    result = ENGINE.make_story_choice(state, str(body.get("choice", "")))
+                    beats = body.get("beats") if isinstance(body.get("beats"), dict) else {}
+                    result = ENGINE.make_story_choice(state, str(body.get("choice", "")), beats)
                 # --- Your Chronicle mechanics ---
                 elif path == "/api/loop/start":
                     result = ENGINE.start_loop(state, str(body.get("action", "")))
@@ -117,6 +128,9 @@ class ChronicleHandler(BaseHTTPRequestHandler):
             self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST, cookie=session_id if is_new else None)
         except json.JSONDecodeError:
             self._json({"error": "Invalid request data."}, HTTPStatus.BAD_REQUEST)
+        except Exception as error:  # keep the server alive and tell the player something useful
+            print(f"[chronicle] unexpected error on {path}: {error!r}")
+            self._json({"error": "The chronicle stumbled. Your save is safe; try again."}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _session(self) -> tuple[str, bool]:
         cookie = SimpleCookie(self.headers.get("Cookie", ""))

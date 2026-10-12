@@ -1,1162 +1,755 @@
+"use strict";
+/* Chronicles of Reincarnation: front end. The Python engine owns every rule; this file only draws and asks. */
+
+const { icon, tile, creature, hero: heroArt } = window.Art;
 const app = document.querySelector("#app");
-const toast = document.querySelector("#toast");
+const overlayEl = document.querySelector("#overlay");
+const toastsEl = document.querySelector("#toasts");
+const fxEl = document.querySelector("#fx");
+
+/* ---------------------------------------------------------------- utils */
+const store = {
+  get(key, fallback) { try { const v = localStorage.getItem("cor." + key); return v === null ? fallback : JSON.parse(v); } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem("cor." + key, JSON.stringify(value)); } catch { /* storage unavailable */ } },
+};
+const AMP = String.fromCharCode(38);
+const esc = (v) => String(v ?? "").replaceAll(AMP, AMP + "amp;").replaceAll("<", AMP + "lt;").replaceAll(">", AMP + "gt;").replaceAll('"', AMP + "quot;").replaceAll("'", AMP + "#039;");
+const cap = (s) => String(s).replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
+const fmt = (n) => {
+  n = Math.round(Number(n) || 0);
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (Math.abs(n) >= 1e4) return (n / 1e3).toFixed(1) + "k";
+  return n.toLocaleString("en-US");
+};
+const pct = (v, m) => Math.max(0, Math.min(100, m ? (v / m) * 100 : 0));
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many || one + "s"}`;
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+const RES = {
+  magicules: { label: "Magicules", cls: "mag", icon: "spiral", r: "r-mag" },
+  gold: { label: "Gold", cls: "gold", icon: "coin", r: "r-gold" },
+  insight: { label: "Insight", cls: "ins", icon: "eye", r: "r-ins" },
+  research: { label: "Research", cls: "rsc", icon: "flask", r: "r-res" },
+};
+const resLabel = (k) => RES[k]?.label || cap(k);
+const FRIENDS = { goblin_village: "Goblin village", direwolf_pack: "Direwolf pack", veldora: "Veldora", dwargon: "Dwargon", lizardmen: "Lizardmen", orc_people: "Orc people", kijin: "Kijin", tempest_federation: "Tempest Federation", falmuth: "Falmuth", merchant_guild: "Merchant guild", mercenary_captain: "Mercenaries", diablo: "Diablo" };
+const DIFF_SECONDS = { Simple: 3, Measured: 6, Demanding: 10, Complex: 14, Social: 7, Intense: 18 };
+
+const JOURNEY = [
+  ["awakening", "Awakening", "Prologue"], ["first_steps", "First steps", "Prologue"],
+  ["seek_dragon", "The thunder in the cave", "Chapter I"], ["learn_from_friend", "Lessons from a dragon", "Chapter I"],
+  ["protect_village", "The goblin village", "Chapter II"], ["chapter_one_complete", "Pack and party", "Chapter II"],
+  ["dwarf_kingdom", "The mountain kingdom", "Chapter III"], ["orc_lord_arc", "The Orc Lord", "Chapter IV"],
+  ["lizardmen_alliance", "Scales and fangs", "Chapter V"], ["tempest_federation", "A nation of monsters", "Chapters VI and VII"],
+  ["falmuth_relations", "The human kingdom", "Chapter VIII"], ["demon_lord_awakening", "The awakening", "Chapter IX"],
+  ["walpurgis", "The council of Demon Lords", "Chapter IX"], ["farmus_invasion", "The invasion", "Chapter X"],
+  ["harvest_festival", "The Harvest Festival", "Chapter X"], ["epilogue", "Legends are written", "Epilogue"],
+];
+const phaseIndex = (p) => JOURNEY.findIndex((j) => j[0] === p);
+
+/* ---------------------------------------------------------------- state */
 let state = null;
-let selectedCharacter = "rimuru";
+let prev = null;
+let tab = store.get("tab", "actions");
 let busy = false;
+let serverOffset = 0;
+let selectedFoe = null;
+let auto = false;
 let autoTimer = null;
-let refreshTimer = null;
-let activeTab = "actions";
-// currently selected enemy index (0-based) in multi-enemy encounters
-let selectedEnemyIndex = null;
-// animation frame id for a smooth action progress bar
-let activityAnimId = null;
+let menuOpen = false;
+let overlayMode = null; // 'scene' | 'confirm' | 'report' | null
+let wakeTimer = null;
+let shellBuilt = false;
+let autoDungeon = null; // zone id repeated automatically
+const playedEvents = new Set();
+let eventsPrimed = false;
+let muted = store.get("muted", false);
 
-// Animate the progress bar smoothly based on activity.started_at and activity.ends_at
-function animateActivityProgress() {
-  // cancel previous animation if any
-  if (activityAnimId) {
-    cancelAnimationFrame(activityAnimId);
-    activityAnimId = null;
-  }
-  if (!state || !state.activity) return;
-  const span = document.querySelector('.meter.progress > span');
-  if (!span) return;
-  const startsAt = state.activity.started_at * 1000; // convert to ms
-  const endsAt = state.activity.ends_at * 1000;
-  const duration = Math.max(1, endsAt - startsAt);
+const nowSec = () => (Date.now() + serverOffset) / 1000;
 
-  function frame() {
-    const now = Date.now();
-    const elapsed = Math.max(0, Math.min(duration, now - startsAt));
-    const pct = Math.round((elapsed / duration) * 100);
-    span.style.setProperty('--value', pct + '%');
-    // continue until the endsAt has passed
-    if (now < endsAt) {
-      activityAnimId = requestAnimationFrame(frame);
-    } else {
-      // ensure final state reached
-      span.style.setProperty('--value', '100%');
-      activityAnimId = null;
-    }
+/* ---------------------------------------------------------------- sound */
+let audio = null;
+function tone(freq, dur, type = "sine", vol = 0.05, delay = 0, slide = 0) {
+  if (muted) return;
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === "suspended") audio.resume();
+    const t = audio.currentTime + delay;
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    if (slide) osc.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(gain).connect(audio.destination);
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
+  } catch { /* audio blocked */ }
+}
+function sound(name) {
+  switch (name) {
+    case "click": tone(560, 0.05, "triangle", 0.04); break;
+    case "good": tone(523, 0.09, "triangle", 0.05); tone(784, 0.14, "triangle", 0.05, 0.08); break;
+    case "hit": tone(220, 0.12, "square", 0.04, 0, -120); break;
+    case "hurt": tone(150, 0.2, "sawtooth", 0.05, 0, -80); break;
+    case "level": [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.16, "triangle", 0.05, i * 0.09)); break;
+    case "story": tone(392, 0.2, "sine", 0.05); tone(587, 0.3, "sine", 0.04, 0.12); break;
+    case "error": tone(160, 0.14, "square", 0.04); break;
+    case "win": [392, 523, 659, 784].forEach((f, i) => tone(f, 0.2, "triangle", 0.05, i * 0.1)); break;
+    case "type": tone(900 + Math.random() * 200, 0.015, "square", 0.012); break;
+    default: break;
   }
-  // start the animation loop
-  activityAnimId = requestAnimationFrame(frame);
 }
 
+/* ---------------------------------------------------------------- morph (DOM diff so hover, focus, scroll and CSS transitions survive updates) */
+function morph(root, html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_TEXT);
+  const blanks = [];
+  while (walker.nextNode()) if (!walker.currentNode.nodeValue.trim()) blanks.push(walker.currentNode);
+  blanks.forEach((n) => n.remove());
+  morphChildren(root, tpl.content);
+}
+function keyOf(n) { return n.nodeType === 1 ? n.getAttribute("data-key") : null; }
+function morphChildren(from, to) {
+  const live = Array.from(from.childNodes);
+  const keyed = new Map();
+  const loose = [];
+  for (const n of live) { const k = keyOf(n); if (k) keyed.set(k, n); else loose.push(n); }
+  let li = 0;
+  const result = [];
+  for (const t of Array.from(to.childNodes)) {
+    const k = keyOf(t);
+    let match = null;
+    if (k) { match = keyed.get(k) || null; if (match) keyed.delete(k); }
+    else if (li < loose.length) match = loose[li++];
+    if (match && match.nodeType === t.nodeType && match.nodeName === t.nodeName) { morphNode(match, t); result.push(match); }
+    else result.push(t);
+  }
+  const keep = new Set(result);
+  for (const n of live) if (!keep.has(n)) from.removeChild(n);
+  result.forEach((n, i) => { if (from.childNodes[i] !== n) from.insertBefore(n, from.childNodes[i] || null); });
+}
+function morphNode(a, b) {
+  if (a.nodeType !== 1) { if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue; return; }
+  if (a.isEqualNode(b)) return;
+  const liveStyle = a.hasAttribute("data-t1");
+  for (const attr of Array.from(a.attributes)) if (!b.hasAttribute(attr.name) && !(liveStyle && attr.name === "style")) a.removeAttribute(attr.name);
+  for (const attr of Array.from(b.attributes)) {
+    if (liveStyle && attr.name === "style") continue;
+    if (a.getAttribute(attr.name) !== attr.value) a.setAttribute(attr.name, attr.value);
+  }
+  if (a.nodeName === "INPUT") { a.checked = b.hasAttribute("checked"); return; }
+  morphChildren(a, b);
+}
 
-const AMP = String.fromCharCode(38);
-const escapeHtml = (value) =>
-  String(value ?? "")
-    .replaceAll(AMP, AMP + "amp;")
-    .replaceAll("<", AMP + "lt;")
-    .replaceAll(">", AMP + "gt;")
-    .replaceAll('"', AMP + "quot;")
-    .replaceAll("'", AMP + "#039;");
-
-const clampPercent = (value, maximum) =>
-  Math.max(0, Math.min(100, maximum ? (value / maximum) * 100 : 0));
-
+/* ---------------------------------------------------------------- api */
 async function api(path, payload) {
   const options = payload === undefined
     ? { headers: { Accept: "application/json" } }
-    : {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(payload),
-      };
+    : { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload) };
   const response = await fetch(path, options);
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "The chronicle resisted that action.");
-  return result;
+  let body = null;
+  try { body = await response.json(); } catch { /* non-JSON error */ }
+  if (!response.ok) throw new Error(body?.error || "The chronicle stumbled. Try that again.");
+  return body;
 }
-
-function showError(message) {
-  toast.textContent = message;
-  toast.classList.add("visible");
-  window.clearTimeout(showError.timer);
-  showError.timer = window.setTimeout(() => toast.classList.remove("visible"), 3200);
-}
-
-async function mutate(path, payload = {}) {
-  if (busy) return;
+async function act(path, payload = {}, { sfx = "click" } = {}) {
+  if (busy) return false;
   busy = true;
   try {
-    state = await api(path, payload);
-    render();
+    setState(await api(path, payload));
+    sound(sfx);
+    return true;
   } catch (error) {
-    showError(error.message);
+    toast(error.message, "error");
+    sound("error");
+    return false;
   } finally {
     busy = false;
   }
 }
+async function refreshState() {
+  if (busy) return;
+  try { setState(await api("/api/state")); } catch { /* local server paused; stay quiet */ }
+}
 
+function setState(next) {
+  prev = state;
+  state = next;
+  if (state.server_time) serverOffset = state.server_time * 1000 - Date.now();
+  render();
+  if (prev?.started && state.started) observe(prev, state);
+  primeEvents();
+  maybeShowScene();
+}
+
+/* ---------------------------------------------------------------- change observer: floaters, toasts, level-ups, reports */
+function observe(a, b) {
+  for (const key of Object.keys(RES)) {
+    const d = (b[key] || 0) - (a[key] || 0);
+    if (d > 0) floatAt(`[data-res="${key}"]`, `+${fmt(d)}`, `var(--${key === "magicules" ? "slime" : key === "gold" ? "gold" : key === "insight" ? "blue" : "violet"})`);
+  }
+  if (b.level > a.level && b.reincarnations === a.reincarnations) levelBanner(b.level, b.level - a.level);
+  const fresh = newLogs(a, b);
+  let shown = 0;
+  for (const entry of fresh) {
+    if (shown >= 3) break;
+    const t = entry.text;
+    if (entry.kind === "story") { toast(t, "story", "book"); shown++; sound("story"); }
+    else if (entry.kind === "growth" && !t.startsWith("EVOLUTION")) { toast(t, "good", "sparkle"); shown++; }
+    else if (entry.kind === "danger" && !t.includes("retaliates")) { toast(t, "error", "skull"); shown++; }
+  }
+  if (!a.battle && b.battle) { tab = "battle"; selectedFoe = null; auto = true; syncAuto(); paint(); }
+  if (a.battle && !b.battle) {
+    auto = false; syncAuto();
+    if (tab === "battle") { tab = "expeditions"; store.set("tab", tab); }
+    paint();
+  }
+  maybeShowScene();
+}
+function logKey(e) { return e.time + "|" + e.text; }
+function newLogs(a, b) {
+  const old = a.log || [];
+  const cur = b.log || [];
+  if (!old.length) return cur.slice(-3);
+  const last = logKey(old[old.length - 1]);
+  let idx = -1;
+  for (let i = cur.length - 1; i >= 0; i--) if (logKey(cur[i]) === last) { idx = i; break; }
+  return idx === -1 ? cur.slice(-3) : cur.slice(idx + 1);
+}
+
+/* ---------------------------------------------------------------- toasts and floaters */
+function toast(text, kind = "info", iconName = "sparkle") {
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.innerHTML = `${icon(kind === "error" ? "close" : iconName, 18)}<span>${esc(text)}</span>`;
+  toastsEl.appendChild(el);
+  while (toastsEl.children.length > 4) toastsEl.firstChild.remove();
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 320); }, kind === "error" ? 4200 : 3400);
+}
+function floatAt(selector, text, color) {
+  const target = $(selector);
+  if (!target) return;
+  const r = target.getBoundingClientRect();
+  const el = document.createElement("div");
+  el.className = "float-delta";
+  el.style.color = color;
+  el.style.left = `${r.left + r.width / 2 - 12}px`;
+  el.style.top = `${r.bottom - 6}px`;
+  el.textContent = text;
+  fxEl.appendChild(el);
+  setTimeout(() => el.remove(), 1350);
+}
+function levelBanner(level, gained) {
+  const el = document.createElement("div");
+  el.className = "levelup";
+  el.innerHTML = `<strong>Level ${level}</strong>+${5 * gained} Max HP, +${2 * gained} Max Mana, +${gained} Attack`;
+  document.body.appendChild(el);
+  sound("level");
+  setTimeout(() => el.remove(), 3100);
+}
+
+/* ---------------------------------------------------------------- shell */
 function render() {
-  stopAutoIfNeeded();
-  if (!state?.started) {
-    document.body.classList.remove("route-rimuru", "route-diablo");
-    renderLanding();
+  if (!state?.started) { shellBuilt = false; renderTitle(); return; }
+  if (!shellBuilt) {
+    app.innerHTML = `<div class="shell"><header class="top" id="top"></header><aside class="side" id="side" aria-label="Status"></aside><main class="center"><nav class="tabs" id="tabs" aria-label="Sections"></nav><div class="stage" id="stage"></div><section class="logpanel" id="log" aria-label="Chronicle log"></section></main><aside class="dock" id="dock" aria-label="Current activity"></aside></div>`;
+    shellBuilt = true;
+    prev = null;
+  }
+  if (tab === "battle" && !state.battle) tab = "expeditions";
+  paint();
+}
+function paint() {
+  if (!shellBuilt || !state?.started) return;
+  morph($("#top"), topHTML());
+  morph($("#side"), sideHTML());
+  morph($("#tabs"), tabsHTML());
+  morph($("#stage"), stageHTML());
+  morph($("#log"), logHTML());
+  morph($("#dock"), dockHTML());
+  scheduleWake();
+}
+
+/* ---------------------------------------------------------------- title */
+function renderTitle() {
+  const hero = state?.hero;
+  if ($(".title-screen")) return;
+  app.innerHTML = `
+    <section class="title-screen">
+      <div class="title-art">
+        <svg class="cave" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <rect width="800" height="600" fill="#07100f"/>
+          <path d="M0 0h800v70l-40 50-30-80-50 90-36-70-46 60-60-100-44 90-40-60-54 80-48-90-40 70-46-80-50 100-34-60-44 70-40-50z" fill="#0d1d1c"/>
+          <path d="M0 0h800v36l-60 30-40-50-60 56-50-40-70 44-40-46-80 54-60-50-70 42-60-34-50 40-60-38z" fill="#091413"/>
+          <path d="M-20 600V470c120-40 220-20 320-50s200-60 300-30 160 50 220 20v190z" fill="#0c1a19"/>
+          <g fill="#56e0c0"><circle cx="120" cy="420" r="3" opacity=".7"/><circle cx="640" cy="360" r="2.4" opacity=".6"/><circle cx="700" cy="480" r="3.4" opacity=".7"/><circle cx="210" cy="520" r="2.2" opacity=".5"/><circle cx="520" cy="200" r="2" opacity=".4"/></g>
+          <g stroke="#2a5d52" stroke-width="3" fill="none" stroke-linecap="round"><path d="M90 470l-6-34M96 470l8-26M650 440l-4-30M660 440l10-22"/></g>
+        </svg>
+        <div class="slime-stage">${heroArt(1, 0, 320)}<div class="shadow"></div></div>
+      </div>
+      <div class="title-copy">
+        <p class="kicker">A fan-made incremental RPG</p>
+        <h1>Chronicles of Reincarnation</h1>
+        <p class="lede">You wake in a sealed cave with no body, no name, and a calm voice listing impossible skills. Grow from a nameless slime into the founder of a nation, one choice at a time.</p>
+        <ol class="opening">
+          <li><span><strong>Queue actions</strong> that finish while you are away: gather, scout, train.</span></li>
+          <li><span><strong>Run loops</strong> in the background and spend Magicules on permanent upgrades.</span></li>
+          <li><span><strong>Fight expeditions</strong>, recruit the monsters you beat, and make the calls that shape Tempest.</span></li>
+        </ol>
+        <div class="title-actions">
+          <button class="btn primary lg" data-act="begin">Begin the chronicle</button>
+          <span class="inline-hint">Saves automatically to this browser's local database.</span>
+        </div>
+        ${hero ? `<p class="inline-hint"><strong>${esc(hero.ability)}.</strong> ${esc(hero.ability_text)}</p>` : ""}
+        <p class="fineprint">Unofficial fan project. Not affiliated with or endorsed by the owners of <em>That Time I Got Reincarnated as a Slime</em> or <em>Your Chronicle</em>.</p>
+      </div>
+    </section>`;
+}
+
+/* ---------------------------------------------------------------- battle logic */
+function bestSkill(targetFoe) {
+  const s = state;
+  const usable = s.skills.filter((k) => k.unlocked && s.mana >= k.mana);
+  const finisher = usable.find((k) => k.execute && targetFoe && targetFoe.hp / targetFoe.max_hp <= k.execute);
+  if (finisher) return finisher;
+  return usable.filter((k) => k.power > 0).sort((a, b) => b.power - a.power)[0] || null;
+}
+async function useSkill(id) {
+  if (!state?.battle) return;
+  await act("/api/combat/turn", { skill: id, target: targetIndex() }, { sfx: "click" });
+}
+function syncAuto() {
+  clearInterval(autoTimer);
+  autoTimer = null;
+  if (auto && state?.battle) autoTimer = setInterval(autoStep, 760);
+}
+async function autoStep() {
+  if (busy || !state?.battle || overlayMode) return;
+  if (state.hp / state.max_hp < 0.3) {
+    auto = false; syncAuto(); paint();
+    toast("Auto-battle paused: vitality is low.", "error");
     return;
   }
-  document.body.classList.toggle("route-diablo", state.character === "diablo");
-  document.body.classList.toggle("route-rimuru", state.character === "rimuru");
-  renderGame();
-  if (state.pending_choice) renderChoice();
-  // start or refresh the smooth activity progress animator so the bar moves continuously
-  animateActivityProgress();
-  // play any battle events received from the server (one-time playback)
-  if (state?.battle?.events && state.battle.events.length) {
-    playBattleEvents(state.battle.events);
-    // mark events as played locally so they are not replayed on re-render
-    state.battle._played = (state.battle._played || new Set());
-    state.battle.events.forEach(e => state.battle._played.add(e.id));
-    // clear events array in the in-memory state so future renders don't re-run animation
-    state.battle.events = [];
+  const foes = state.battle.enemies;
+  let low = -1;
+  foes.forEach((f, i) => { if (f.hp > 0 && (low < 0 || f.hp < foes[low].hp)) low = i; });
+  selectedFoe = low < 0 ? null : low;
+  const pick = bestSkill(foes[low]);
+  if (!pick) { auto = false; syncAuto(); paint(); toast("Auto-battle stopped: no usable skill.", "error"); return; }
+  await useSkill(pick.id);
+}
+
+/* battle feedback: floaters, hit shakes, reports */
+function primeEvents() {
+  if (!state?.started) return;
+  const events = [...(state.battle?.events || []), ...(state.last_battle_events || [])];
+  if (!eventsPrimed) {
+    events.forEach((e) => playedEvents.add(e.id));
+    eventsPrimed = true;
+    return;
+  }
+  let delay = 0;
+  for (const e of events) {
+    if (playedEvents.has(e.id)) continue;
+    playedEvents.add(e.id);
+    setTimeout(() => playEvent(e), delay);
+    delay += 260;
   }
 }
-
-// keep a global set of played event ids to avoid double-playing after state refreshes
-const _playedBattleEventIds = new Set();
-
-function playBattleEvents(events) {
-  if (!Array.isArray(events) || !events.length) return;
-  events.forEach((evt, i) => {
-    if (!evt || !evt.id || _playedBattleEventIds.has(evt.id)) return;
-    // schedule each event with a slight delay for readable playback
-    setTimeout(() => {
-      _playedBattleEventIds.add(evt.id);
-      switch (evt.type) {
-        case 'skill':
-          showDamagePopup(evt.target, '-' + evt.damage);
-          break;
-        case 'attack':
-          // enemy attack shows damage on player (use profile orb)
-          showDamagePopup(null, '-' + evt.damage, true);
-          break;
-        case 'defeat':
-          showPopupText(evt.target, (evt.name || 'Enemy') + ' defeated');
-          break;
-        case 'recruit':
-          showPopupText(null, 'Ally recruited: ' + evt.ally_id);
-          break;
-        case 'expedition_complete':
-          showPopupText(null, 'Expedition complete — ' + evt.zone);
-          break;
-        case 'encounter_advance':
-          showPopupText(null, 'Next encounter: ' + evt.next);
-          break;
-        case 'expedition_failed':
-          showPopupText(null, 'Expedition failed — ' + evt.zone);
-          break;
-        default:
-          // ignore unknown events for now
-          break;
-      }
-    }, i * 220);
-  });
+function popAt(el, text, cls) {
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  const d = document.createElement("div");
+  d.className = `dmg ${cls || ""}`;
+  d.textContent = text;
+  d.style.left = `${r.left + r.width / 2 - 14}px`;
+  d.style.top = `${r.top + r.height * 0.25}px`;
+  fxEl.appendChild(d);
+  setTimeout(() => d.remove(), 1150);
 }
-
-function showPopupText(targetIndex, text, isPlayer) {
-  const container = isPlayer ? document.querySelector('.profile-orb') : (document.querySelector(`.enemy-list-item[data-target="${targetIndex}"] .enemy-icon`) || document.querySelector('.enemy-sigil'));
-  if (!container) return;
-  const el = document.createElement('div');
-  el.className = 'damage-pop';
-  el.textContent = text;
-  container.style.position = container.style.position || 'relative';
-  container.appendChild(el);
-  // position after layout so offsetWidth/Height are available
-  requestAnimationFrame(() => {
-    const cw = container.clientWidth;
-    const ch = container.clientHeight;
-    const ew = el.offsetWidth;
-    const eh = el.offsetHeight;
-    el.style.left = `${Math.max(6, Math.round((cw - ew) / 2))}px`;
-    el.style.top = `${Math.max(6, Math.round(ch * 0.08))}px`;
-    el.style.transform = '';
-  });
-  setTimeout(() => el.remove(), 1200);
+function shake(el, cls) {
+  if (!el) return;
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), 360);
 }
-
-function showDamagePopup(targetIndex, text, isPlayer) {
-  const container = isPlayer ? document.querySelector('.profile-orb') : (document.querySelector(`.enemy-list-item[data-target="${targetIndex}"] .enemy-icon`) || document.querySelector('.enemy-sigil'));
-  if (!container) return;
-  const el = document.createElement('div');
-  el.className = 'damage-pop';
-  el.textContent = text;
-  container.style.position = container.style.position || 'relative';
-  container.appendChild(el);
-  requestAnimationFrame(() => {
-    const cw = container.clientWidth;
-    const ch = container.clientHeight;
-    const ew = el.offsetWidth;
-    const eh = el.offsetHeight;
-    el.style.left = `${Math.max(6, Math.round((cw - ew) / 2))}px`;
-    el.style.top = `${Math.max(6, Math.round(ch * 0.18))}px`;
-    el.style.transform = '';
-  });
-  setTimeout(() => el.remove(), 1200);
-}
-
-function renderLanding() {
-  const hero = state?.hero;
-  // Build a characters array from the server's single-hero landing state so the
-  // origin screen can re-use the character-card markup.
-  const characters = hero
-    ? [{
-        id: hero.id,
-        name: hero.name,
-        title: hero.title,
-        route: hero.route,
-        ability: hero.ability,
-        ability_text: hero.ability_text,
-        intro: "A nameless slime awakens in a sealed cavern, guided by the voice of a storm dragon and driven by an endless hunger to grow, devour, and protect.",
-      }]
-    : [];
-  app.innerHTML = `
-    <section class="origin-screen">
-      <nav class="origin-nav">
-        <div class="wordmark"><span class="wordmark-mark">CR</span> Chronicles of Reincarnation</div>
-        <span class="fan-label">Unofficial Python-powered fan prototype</span>
-      </nav>
-      <header class="origin-heading">
-        <p class="eyebrow">A NEW WORLD REMEMBERS EVERY CHOICE</p>
-        <h1>Choose your <em>origin.</em></h1>
-        <p>${escapeHtml(hero?.name || "A soul")} — a being of endless potential in a world that remembers every choice. Begin the chronicle and write the first chapter of a legend.</p>
-      </header>
-      <div class="origin-grid">
-        ${characters.map((character, index) => characterCard(character, index)).join("")}
-      </div>
-      <div class="origin-action">
-        <button class="primary-button" id="begin-chronicle">Begin ${escapeHtml(characters.find((item) => item.id === selectedCharacter)?.route || "Chronicle")}</button>
-      </div>
-    </section>`;
-
-  app.querySelectorAll(".origin-card").forEach((card) => {
-    card.addEventListener("click", () => {
-      selectedCharacter = card.dataset.character;
-      renderLanding();
-    });
-  });
-  app.querySelector("#begin-chronicle")?.addEventListener("click", () =>
-    mutate("/api/new-game", { character: selectedCharacter })
-  );
-}
-
-function characterCard(character, index) {
-  const selected = character.id === selectedCharacter;
-  const sigil = character.id === "rimuru" ? "slime" : "demon";
-  return `
-    <button class="origin-card ${escapeHtml(character.id)} ${selected ? "selected" : ""}" data-character="${escapeHtml(character.id)}" aria-pressed="${selected}">
-      <div class="origin-visual"><span class="sigil ${sigil}" aria-hidden="true"></span></div>
-      <div class="origin-copy">
-        <span class="origin-number">0${index + 1} / ${escapeHtml(character.route)}</span>
-        <h2>${escapeHtml(character.name)}</h2>
-        <span class="origin-title">${escapeHtml(character.title)}</span>
-        <p>${escapeHtml(character.intro)}</p>
-        <div class="origin-ability">
-          <strong>${escapeHtml(character.ability)}</strong>
-          <span>${escapeHtml(character.ability_text)}</span>
-        </div>
-      </div>
-    </button>`;
-}
-
-function renderGame() {
-  const info = state.character_info;
-  const glyph = state.character === "rimuru" ? "水" : "黒";
-  app.innerHTML = `
-    <section class="game-shell">
-      <nav class="game-nav">
-        <div class="wordmark"><span class="wordmark-mark">CR</span> <span class="wordmark-text">Chronicles of Reincarnation</span></div>
-        <div class="nav-center"><span class="save-dot"></span> Auto-saved locally · ${escapeHtml(info.route)}</div>
-        <button class="ghost-button" id="new-chronicle">New Chronicle</button>
-      </nav>
-      <div class="game-layout">
-        <aside class="panel profile-panel">
-          <div class="profile-frame">
-            <div class="profile-orb"><span class="profile-glyph">${glyph}</span></div>
-            <div class="frame-corner tl"></div>
-            <div class="frame-corner tr"></div>
-            <div class="frame-corner bl"></div>
-            <div class="frame-corner br"></div>
-          </div>
-          <div class="profile-details">
-            <div class="profile-name">
-              <p class="eyebrow">${escapeHtml(info.route)}</p>
-              <h1>${escapeHtml(info.name)}</h1>
-              <div class="profile-divider"><span class="divider-line"></span><span class="divider-diamond">◆</span><span class="divider-line"></span></div>
-              <p>${escapeHtml(info.title)} · ${escapeHtml(state.alignment)}</p>
-            </div>
-            <div class="level-row"><strong>Level ${state.level}</strong><span>${state.xp} / ${state.xp_next} XP</span></div>
-            ${meter(state.xp, state.xp_next, "xp", "Experience")}
-            <div class="stat-block">
-              ${bar("Vitality", state.hp, state.max_hp, "hp")}
-              ${bar("Mana", state.mana, state.max_mana, "mana")}
-              ${bar("Focus", state.focus, state.max_focus, "focus")}
-            </div>
-            <div class="stat-grid">
-              <div><strong>${state.attack}</strong><span>Attack</span></div>
-              <div><strong>${state.defense}</strong><span>Defense</span></div>
-              <div><strong>${state.speed}</strong><span>Speed</span></div>
-            </div>
-            <div class="resource-grid">
-              <div><strong>${state[state.resource_key]}</strong><span>${escapeHtml(state.resource_label)}</span></div>
-              <div><strong>${state.insight}</strong><span>Insight</span></div>
-              <div><strong>${state.gold}</strong><span>Gold</span></div>
-            </div>
-            <div class="resource-grid">
-              <div><strong>${state.research}</strong><span>Research</span></div>
-              <div><strong>${state.habit_points}</strong><span>Habits</span></div>
-              <div><strong>${state.inspiration}</strong><span>Inspiration</span></div>
-            </div>
-            <div class="route-ability">
-              <strong>${escapeHtml(info.ability)}</strong>
-              <p>${escapeHtml(info.ability_text)}</p>
-            </div>
-            ${state.reincarnations > 0 ? `<div class="reincarnation-badge">Reincarnated ×${state.reincarnations} · ${escapeHtml(state.reincarnation_class || 'Unknown')}</div>` : ""}
-          </div>
-        </aside>
-
-        <section class="panel center-panel">
-          <header class="chronicle-head">
-            <div class="chronicle-heading">
-              <p class="eyebrow">${escapeHtml(state.story_objective || "CHAPTER I · THE FIRST THRESHOLD")}</p>
-              <h2>${state.character === "rimuru" ? "Beneath the sealed world" : "A whisper beyond the abyss"}</h2>
-              <div class="chronicle-rule"><span class="rule-line"></span><span class="rule-mark">✦</span><span class="rule-line"></span></div>
-            </div>
-            <div class="progress-seal" title="Chapter progress"><div class="seal-inner">${state.chronicle_progress}%</div></div>
-          </header>
-          <nav class="tab-bar">
-            ${tabButton("actions", "Actions")}
-            ${tabButton("loops", "Loops")}
-            ${tabButton("instant", "Instant")}
-            ${tabButton("upgrades", "Upgrades")}
-            ${tabButton("next", "Next")}
-            ${tabButton("research", "Research")}
-            ${tabButton("prestige", "Prestige")}
-            ${tabButton("sins", "Sins")}
-            ${tabButton("combat", "Combat")}
-            ${tabButton("story", "Story")}
-          </nav>
-          <div class="tab-content">
-            ${renderTabContent()}
-          </div>
-        </section>
-
-        <aside class="panel battle-panel">
-          ${battlePanel()}
-        </aside>
-      </div>
-    </section>`;
-  bindGameEvents();
-}
-
-function tabButton(id, label) {
-  const active = activeTab === id;
-  return `<button class="tab-button ${active ? "active" : ""}" data-tab="${id}">${escapeHtml(label)}</button>`;
-}
-
-function renderTabContent() {
-  switch (activeTab) {
-    case "actions": return renderActionsTab();
-    case "loops": return renderLoopsTab();
-    case "instant": return renderInstantTab();
-    case "upgrades": return renderUpgradesTab();
-    case "next": return renderNextTab();
-    case "research": return renderResearchTab();
-    case "prestige": return renderPrestigeTab();
-    case "sins": return renderSinsTab();
-    case "combat": return renderCombatTab();
-    case "story": return renderStoryTab();
-    default: return renderActionsTab();
-  }
-}
-
-function renderActionsTab() {
-  return `
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Available actions</h3><span>Focus restores every ${state.focus_recovery_seconds}s</span></div>
-      <div class="action-list">${state.actions.map(actionRow).join("")}</div>
-    </section>`;
-}
-
-function renderLoopsTab() {
-  const loops = state.loops || [];
-  return `
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Loop actions</h3><span>Run in the background</span></div>
-      <p class="tab-hint">Loop actions run indefinitely in the background, generating resources automatically. Start one and it keeps working while you do other things.</p>
-      <div class="action-list">
-        ${loops.map(loopRow).join("") || '<p class="empty-tab">No loop actions available yet. Level up to unlock more.</p>'}
-      </div>
-    </section>`;
-}
-
-function loopRow(loop) {
-  return `
-    <article class="action-item loop-item ${loop.active ? "active" : ""}">
-      <div class="action-art">${svgForLoop(loop.id)}</div>
-      <div class="action-content">
-        <div class="action-header">
-          <strong>${escapeHtml(loop.name)}</strong>
-          <div class="action-meta"><span class="action-cost">Every ${loop.interval}s</span></div>
-        </div>
-        <p class="action-desc">${escapeHtml(loop.description)}</p>
-        <div class="action-footer">
-          <div class="loop-rewards">
-            ${loop.magicules ? `<span class="reward-chip">+${loop.magicules} ✦</span>` : ""}
-            ${loop.gold ? `<span class="reward-chip">+${loop.gold} ◎</span>` : ""}
-            ${loop.insight ? `<span class="reward-chip">+${loop.insight} ◈</span>` : ""}
-            ${loop.research ? `<span class="reward-chip">+${loop.research} 🔬</span>` : ""}
-            ${loop.heal ? `<span class="reward-chip">+${loop.heal} HP</span>` : ""}
-            ${loop.mana_regen ? `<span class="reward-chip">+${loop.mana_regen} MP</span>` : ""}
-            ${loop.xp ? `<span class="reward-chip">+${loop.xp} XP</span>` : ""}
-          </div>
-          <div class="action-controls">
-            ${loop.active
-              ? `<button class="action-cancel" data-loop-stop="${escapeHtml(loop.id)}">Stop</button>`
-              : `<button class="action-button" data-loop-start="${escapeHtml(loop.id)}">Start</button>`}
-          </div>
-        </div>
-      </div>
-    </article>`;
-}
-
-function svgForLoop(id) {
-  const icons = {
-    rest_loop: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Rest"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M32 88c8-20 20-30 32-30s24 10 32 30" fill="#65e3ce" opacity="0.15" stroke="#65e3ce" stroke-width="4"/><circle cx="64" cy="50" r="14" fill="#65e3ce" opacity="0.8"/><path d="M52 40c4-8 10-12 18-12" stroke="#dffdf6" stroke-width="4" stroke-linecap="round" fill="none"/></svg>',
-    farmwork: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Farmwork"><rect width="128" height="128" rx="22" fill="#171611"/><path d="M20 90h88v18H20z" fill="#1a2d24"/><path d="M34 90V56l28-24 28 24v34" fill="#20372d" stroke="#d9b56d" stroke-width="3"/><path d="M48 90V68h32v22" fill="#d9b56d" opacity="0.18"/><path d="M60 43h8v12h-8z" fill="#d9b56d" opacity="0.8"/></svg>',
-    meditation: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Meditation"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="30" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M64 34v60M34 64h60" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round" opacity="0.6"/><circle cx="64" cy="64" r="10" fill="#7aa7ff" opacity="0.8"/></svg>',
-    hunting: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hunting"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#65e3ce" opacity="0.12" stroke="#65e3ce" stroke-width="4"/><circle cx="46" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="64" cy="50" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="82" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><path d="M36 40l10 12M92 40l-10 12" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
-    worship: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Worship"><rect width="128" height="128" rx="22" fill="#17140f"/><path d="M64 20l12 24 26 4-19 18 4 26-23-12-23 12 4-26-19-18 26-4 12-24Z" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><circle cx="64" cy="64" r="8" fill="#d9b56d" opacity="0.8"/></svg>',
-    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Loop"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
-  };
-  return icons[id] || icons.default;
-}
-
-function renderInstantTab() {
-  const instants = state.instant_actions || [];
-  return `
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Instant actions</h3><span>Immediate resource trades</span></div>
-      <p class="tab-hint">Instant actions trade resources immediately. Each has a short cooldown.</p>
-      <div class="action-list">
-        ${instants.map(instantRow).join("") || '<p class="empty-tab">No instant actions available yet.</p>'}
-      </div>
-    </section>`;
-}
-
-function instantRow(action) {
-  const onCooldown = action.cooldown_remaining > 0;
-  const costParts = [];
-  if (action.focus_cost) costParts.push(`${action.focus_cost} Focus`);
-  if (action.gold_cost) costParts.push(`${action.gold_cost} Gold`);
-  const rewardParts = [];
-  if (action.magicules) rewardParts.push(`+${action.magicules} ✦`);
-  if (action.gold) rewardParts.push(`+${action.gold} ◎`);
-  if (action.insight) rewardParts.push(`+${action.insight} ◈`);
-  return `
-    <article class="action-item instant-item">
-      <div class="action-art">${svgForInstant(action.id)}</div>
-      <div class="action-content">
-        <div class="action-header">
-          <strong>${escapeHtml(action.name)}</strong>
-          <div class="action-meta"><span class="action-cost">${costParts.join(" · ")}</span><span class="action-reward">${rewardParts.join(" ")}</span></div>
-        </div>
-        <p class="action-desc">${escapeHtml(action.description)}</p>
-        <div class="action-footer">
-          <div class="action-controls">
-            <button class="action-button" data-instant="${escapeHtml(action.id)}" ${onCooldown ? "disabled" : ""}>
-              ${onCooldown ? `${action.cooldown_remaining}s` : "Use"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </article>`;
-}
-
-function svgForInstant(id) {
-  const icons = {
-    get_motivated: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Get Motivated"><rect width="128" height="128" rx="22" fill="#171611"/><path d="M64 20l12 24 26 4-19 18 4 26-23-12-23 12 4-26-19-18 26-4 12-24Z" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><path d="M64 44v40M44 64h40" stroke="#d9b56d" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
-    quick_trade: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Quick Trade"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M24 48h60l-14-14M104 80H44l14 14" stroke="#65e3ce" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="88" cy="48" r="12" fill="#d9b56d" opacity="0.8"/><circle cx="40" cy="80" r="12" fill="#65e3ce" opacity="0.8"/></svg>',
-    scavenge: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Scavenge"><rect width="128" height="128" rx="22" fill="#0d1320"/><path d="M32 96h64M40 96V64l24-20 24 20v32" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="64" cy="44" r="10" fill="#7aa7ff" opacity="0.8"/><path d="M52 96V76h24v20" fill="#7aa7ff" opacity="0.2"/></svg>',
-    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Instant"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
-  };
-  return icons[id] || icons.default;
-}
-
-function renderUpgradesTab() {
-  const upgrades = state.upgrade_actions || [];
-  return `
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Upgrade actions</h3><span>Permanent stat increases</span></div>
-      <p class="tab-hint">Upgrade actions permanently increase your stats, caps, and party slots.</p>
-      <div class="action-list">
-        ${upgrades.map(upgradeRow).join("") || '<p class="empty-tab">No upgrades available yet. Level up to unlock more.</p>'}
-      </div>
-    </section>`;
-}
-
-function upgradeRow(action) {
-  const costParts = Object.entries(action.cost || {}).map(([res, cost]) => `${cost} ${res.replace('_', ' ').title()}`);
-  const effectParts = Object.entries(action.effect || {}).map(([stat, amount]) => {
-    if (stat === "party_slots") return `+${amount} Party Slot`;
-    if (stat === "passive_slots") return `+${amount} Passive Slot`;
-    return `+${amount} ${stat.replace('_', ' ').title()}`;
-  });
-  const canAfford = Object.entries(action.cost || {}).every(([res, cost]) => (state[res] || 0) >= cost);
-  return `
-    <article class="action-item upgrade-item">
-      <div class="action-art">${svgForUpgrade(action.id)}</div>
-      <div class="action-content">
-        <div class="action-header">
-          <strong>${escapeHtml(action.name)}</strong>
-          <div class="action-meta"><span class="action-cost">${costParts.join(" · ")}</span></div>
-        </div>
-        <p class="action-desc">${escapeHtml(action.description)}</p>
-        <div class="action-footer">
-          <span class="action-reward">${effectParts.join(" · ")}</span>
-          <div class="action-controls">
-            <button class="action-button" data-upgrade="${escapeHtml(action.id)}" ${!canAfford ? "disabled" : ""}>Purchase</button>
-          </div>
-        </div>
-      </div>
-    </article>`;
-}
-
-function svgForUpgrade(id) {
-  const icons = {
-    expand_body: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Expand Body"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="30" fill="#132a2c" stroke="#65e3ce" stroke-width="3"/><path d="M64 34v60M34 64h60" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.6"/><path d="M64 24c-18 21-28 34-28 48 0 16 12 28 28 28s28-12 28-28c0-14-10-27-28-48Z" fill="#8ff2df" opacity="0.3"/></svg>',
-    deepen_mana: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Deepen Mana"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="30" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M64 34v60M34 64h60" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round" opacity="0.6"/><circle cx="64" cy="64" r="10" fill="#7aa7ff" opacity="0.8"/></svg>',
-    harden_body: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Harden Body"><rect width="128" height="128" rx="22" fill="#171611"/><path d="M64 20l12 24 26 4-19 18 4 26-23-12-23 12 4-26-19-18 26-4 12-24Z" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><path d="M64 44v40M44 64h40" stroke="#d9b56d" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
-    reinforce_defense: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Reinforce Defense"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M64 20l40 16v28c0 20-16 36-40 44-24-8-40-24-40-44V36l40-16Z" fill="#1b2d2b" stroke="#65e3ce" stroke-width="3"/><path d="M64 36v56M40 64h48" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.6"/></svg>',
-    expand_party: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Expand Party"><rect width="128" height="128" rx="22" fill="#17140f"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#d9b56d" opacity="0.12" stroke="#d9b56d" stroke-width="4"/><circle cx="46" cy="54" r="10" fill="#d9b56d" opacity="0.7"/><circle cx="64" cy="50" r="10" fill="#d9b56d" opacity="0.7"/><circle cx="82" cy="54" r="10" fill="#d9b56d" opacity="0.7"/><path d="M36 40l10 12M92 40l-10 12" stroke="#d9b56d" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
-    passive_slot: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Passive Slot"><rect width="128" height="128" rx="22" fill="#0d1320"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#7aa7ff" opacity="0.12" stroke="#7aa7ff" stroke-width="4"/><circle cx="46" cy="54" r="10" fill="#7aa7ff" opacity="0.7"/><circle cx="64" cy="50" r="10" fill="#7aa7ff" opacity="0.7"/><circle cx="82" cy="54" r="10" fill="#7aa7ff" opacity="0.7"/><path d="M36 40l10 12M92 40l-10 12" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
-    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Upgrade"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
-  };
-  return icons[id] || icons.default;
-}
-
-function renderNextTab() {
-  const nexts = state.next_actions || [];
-  return `
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Next actions</h3><span>Story checkpoints</span></div>
-      <p class="tab-hint">Next actions are major story checkpoints that require significant resources. Completing them advances the narrative.</p>
-      <div class="action-list">
-        ${nexts.map(nextRow).join("") || '<p class="empty-tab">No next actions available.</p>'}
-      </div>
-    </section>`;
-}
-
-function nextRow(action) {
-  const costParts = Object.entries(action.cost || {}).map(([res, cost]) => `${cost} ${res.replace('_', ' ').title()}`);
-  return `
-    <article class="action-item next-item ${action.completed ? "completed" : ""}">
-      <div class="action-art">${svgForNext(action.id)}</div>
-      <div class="action-content">
-        <div class="action-header">
-          <strong>${escapeHtml(action.name)}</strong>
-          <div class="action-meta"><span class="action-cost">${costParts.join(" · ")}</span></div>
-        </div>
-        <p class="action-desc">${escapeHtml(action.description)}</p>
-        <div class="action-footer">
-          ${action.completed ? '<span class="completed-label">✓ Completed</span>' : ''}
-          <div class="action-controls">
-            <button class="action-button" data-next="${escapeHtml(action.id)}" ${action.completed || !action.can_afford ? "disabled" : ""}>
-              ${action.completed ? "Done" : "Complete"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </article>`;
-}
-
-function svgForNext(id) {
-  const icons = {
-    next_escape: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Escape"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M64 20l40 16v28c0 20-16 36-40 44-24-8-40-24-40-44V36l40-16Z" fill="#1b2d2b" stroke="#65e3ce" stroke-width="3"/><path d="M48 64l12 12 20-24" stroke="#65e3ce" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
-    next_village: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Village"><rect width="128" height="128" rx="22" fill="#171611"/><path d="M20 90h88v18H20z" fill="#1a2d24"/><path d="M34 90V56l28-24 28 24v34" fill="#20372d" stroke="#d9b56d" stroke-width="3"/><path d="M48 90V68h32v22" fill="#d9b56d" opacity="0.18"/><path d="M60 43h8v12h-8z" fill="#d9b56d" opacity="0.8"/></svg>',
-    next_capital: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Capital"><rect width="128" height="128" rx="22" fill="#0d1320"/><path d="M24 96h80M32 96V56l32-20 32 20v40" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M48 96V68h32v28" fill="#7aa7ff" opacity="0.2"/><path d="M64 36v20" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round"/></svg>',
-    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Next"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
-  };
-  return icons[id] || icons.default;
-}
-
-function renderResearchTab() {
-  const summonables = state.summonable_allies || [];
-  return `
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Research & Summoning</h3><span>${state.research} Research available</span></div>
-      <p class="tab-hint">Defeat enemies to earn Research. Accumulate enough to permanently summon monsters as allies.</p>
-      <div class="action-list">
-        ${summonables.map(summonRow).join("") || '<p class="empty-tab">All known creatures have been summoned!</p>'}
-      </div>
-    </section>`;
-}
-
-function summonRow(ally) {
-  return `
-    <article class="action-item summon-item">
-      <div class="action-art">${svgForSummon(ally.id)}</div>
-      <div class="action-content">
-        <div class="action-header">
-          <strong>${escapeHtml(ally.name)}</strong>
-          <div class="action-meta"><span class="action-cost">${ally.cost} Research</span></div>
-        </div>
-        <p class="action-desc">${escapeHtml(ally.species)} · ${escapeHtml(ally.role)}</p>
-        <div class="action-footer">
-          <div class="action-controls">
-            <button class="action-button" data-summon="${escapeHtml(ally.id)}" ${!ally.can_afford ? "disabled" : ""}>Summon</button>
-          </div>
-        </div>
-      </div>
-    </article>`;
-}
-
-function svgForSummon(id) {
-  const icons = {
-    cave_bat: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Bat"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M64 30c-20 0-36 16-36 38s16 38 36 38 36-16 36-38-16-38-36-38Z" fill="#172a2a" stroke="#65e3ce" stroke-width="3"/><circle cx="64" cy="64" r="9" fill="#65e3ce"/><path d="M64 18v18M64 110v18M18 64h18M92 64h18" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
-    acid_slug: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Slug"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M32 80c8-20 20-30 32-30s24 10 32 30" fill="#65e3ce" opacity="0.15" stroke="#65e3ce" stroke-width="4"/><circle cx="64" cy="50" r="14" fill="#65e3ce" opacity="0.8"/><path d="M52 40c4-8 10-12 18-12" stroke="#dffdf6" stroke-width="4" stroke-linecap="round" fill="none"/></svg>',
-    armored_spider: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Spider"><rect width="128" height="128" rx="22" fill="#0b1415"/><circle cx="64" cy="64" r="20" fill="#172a2a" stroke="#65e3ce" stroke-width="3"/><path d="M24 44l16 8M104 44l-16 8M24 84l16-8M104 84l-16-8M44 24l8 16M84 24l-8 16M44 104l8-16M84 104l-8-16" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
-    cave_centipede: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Centipede"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M20 64h88" stroke="#65e3ce" stroke-width="6" stroke-linecap="round"/><path d="M28 44l8 20-8 20M48 40l8 24-8 24M68 40l8 24-8 24M88 44l8 20-8 20" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.7"/><circle cx="100" cy="64" r="8" fill="#65e3ce"/></svg>',
-    horned_rabbit: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Rabbit"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="70" r="22" fill="#d9b56d" opacity="0.8"/><path d="M50 52l-8-20M78 52l8-20" stroke="#d9b56d" stroke-width="4" stroke-linecap="round"/><circle cx="56" cy="66" r="3" fill="#171611"/><circle cx="72" cy="66" r="3" fill="#171611"/></svg>',
-    direwolf: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Wolf"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#65e3ce" opacity="0.12" stroke="#65e3ce" stroke-width="4"/><circle cx="46" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="64" cy="50" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="82" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><path d="M36 40l10 12M92 40l-10 12" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
-    forest_lizard: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Lizard"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M32 90c12-28 24-42 48-42s36 14 48 42c-8 18-24 30-48 30s-40-12-48-30Z" fill="#1c1719" stroke="#65e3ce" stroke-width="3"/><path d="M44 66l18-20M116 66l-18-20M58 44l8 18M102 44l-8 18" stroke="#65e3ce" stroke-width="3" stroke-linecap="round"/><circle cx="62" cy="86" r="4" fill="#65e3ce"/><circle cx="98" cy="86" r="4" fill="#65e3ce"/></svg>',
-    fang_captain: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fang Captain"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#65e3ce" opacity="0.2" stroke="#65e3ce" stroke-width="4"/><circle cx="46" cy="54" r="12" fill="#65e3ce" opacity="0.8"/><circle cx="64" cy="50" r="12" fill="#65e3ce" opacity="0.8"/><circle cx="82" cy="54" r="12" fill="#65e3ce" opacity="0.8"/><path d="M36 40l10 12M92 40l-10 12" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.8"/><path d="M54 98l10-18 10 18" stroke="#dffdf6" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
-    marsh_frog: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Frog"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="48" cy="60" r="16" fill="#65e3ce" opacity="0.7"/><circle cx="80" cy="60" r="16" fill="#65e3ce" opacity="0.7"/><path d="M40 76c8 12 40 12 48 0" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" fill="none"/><circle cx="44" cy="56" r="3" fill="#0d1515"/><circle cx="76" cy="56" r="3" fill="#0d1515"/></svg>',
-    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Summon"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
-  };
-  return icons[id] || icons.default;
-}
-
-function renderPrestigeTab() {
-  const ritual = state.dark_ritual || {};
-  const astral = state.astral_upgrades || [];
-  const classes = state.reincarnation_classes || {};
-  return `
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Dark Ritual</h3><span>Soft prestige</span></div>
-      <p class="tab-hint">${escapeHtml(ritual.description || "")}</p>
-      <div class="prestige-card">
-        <div class="prestige-stats">
-          <div><strong>${state.habit_points}</strong><span>Habit Points</span></div>
-          <div><strong>${state.inspiration}</strong><span>Inspiration</span></div>
-          <div><strong>${state.level}</strong><span>Current Level</span></div>
-        </div>
-        <div class="prestige-gains">
-          <span>Gain: <b>+${ritual.habit_gain || 0}</b> Habits · <b>+${ritual.inspiration_gain || 0}</b> Inspiration</span>
-        </div>
-        <button class="primary-button ritual-button" data-ritual ${!ritual.can_perform ? "disabled" : ""}>
-          ${ritual.can_perform ? "Perform Dark Ritual" : `Requires Level ${ritual.min_level}`}
-        </button>
-      </div>
-    </section>
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Astral World</h3><span>Spend Inspiration</span></div>
-      <div class="action-list">
-        ${astral.map(astralRow).join("")}
-      </div>
-    </section>
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Reincarnation</h3><span>Hard prestige</span></div>
-      <p class="tab-hint">Reincarnation resets almost everything but grants permanent class bonuses. Requires level 10.</p>
-      <div class="action-list">
-        ${Object.entries(classes).map(([id, cls]) => reincarnationRow(id, cls)).join("")}
-      </div>
-    </section>`;
-}
-
-function astralRow(upgrade) {
-  return `
-    <article class="action-item astral-item">
-      <div class="action-art">${svgForAstral(upgrade.id)}</div>
-      <div class="action-content">
-        <div class="action-header">
-          <strong>${escapeHtml(upgrade.name)}</strong>
-          <div class="action-meta"><span class="action-cost">${upgrade.cost} Inspiration</span></div>
-        </div>
-        <p class="action-desc">${escapeHtml(upgrade.description)}</p>
-        <div class="action-footer">
-          <span class="action-reward">Level ${upgrade.level}/${upgrade.max_level}</span>
-          <div class="action-controls">
-            <button class="action-button" data-astral="${escapeHtml(upgrade.id)}" ${upgrade.maxed || !upgrade.can_afford ? "disabled" : ""}>
-              ${upgrade.maxed ? "Maxed" : "Upgrade"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </article>`;
-}
-
-function svgForAstral(id) {
-  const icons = {
-    doppelganger: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Doppelganger"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="48" cy="64" r="20" fill="#7aa7ff" opacity="0.6"/><circle cx="80" cy="64" r="20" fill="#7aa7ff" opacity="0.3"/><path d="M48 44v40M80 44v40" stroke="#7aa7ff" stroke-width="3" stroke-linecap="round" opacity="0.5"/></svg>',
-    soul_amplifier: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Soul Amplifier"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="24" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M64 24v18M64 86v18M24 64h18M86 64h18" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round"/><circle cx="64" cy="64" r="8" fill="#7aa7ff" opacity="0.8"/></svg>',
-    eternal_insight: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Eternal Insight"><rect width="128" height="128" rx="22" fill="#0d1320"/><path d="M64 20l12 24 26 4-19 18 4 26-23-12-23 12 4-26-19-18 26-4 12-24Z" fill="#7aa7ff" opacity="0.2" stroke="#7aa7ff" stroke-width="3"/><circle cx="64" cy="64" r="6" fill="#7aa7ff" opacity="0.8"/></svg>',
-    golden_touch: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Golden Touch"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="64" r="24" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><path d="M64 24v18M64 86v18M24 64h18M86 64h18" stroke="#d9b56d" stroke-width="4" stroke-linecap="round"/><circle cx="64" cy="64" r="8" fill="#d9b56d" opacity="0.8"/></svg>',
-    predator_essence: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Predator Essence"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M64 20l40 16v28c0 20-16 36-40 44-24-8-40-24-40-44V36l40-16Z" fill="#1b2d2b" stroke="#65e3ce" stroke-width="3"/><path d="M48 64l12 12 20-24" stroke="#65e3ce" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
-    unbreakable_slime: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Unbreakable Slime"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="30" fill="#132a2c" stroke="#65e3ce" stroke-width="3"/><path d="M64 24c-18 21-28 34-28 48 0 16 12 28 28 28s28-12 28-28c0-14-10-27-28-48Z" fill="#8ff2df" opacity="0.3"/><path d="M64 44v40M44 64h40" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.6"/></svg>',
-    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Astral"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
-  };
-  return icons[id] || icons.default;
-}
-
-function reincarnationRow(id, cls) {
-  const bonusParts = Object.entries(cls.base_bonus || {}).map(([stat, amount]) => `+${amount} ${stat.replace('_', ' ').title()}`);
-  return `
-    <article class="action-item reincarnation-item">
-      <div class="action-art">${svgForReincarnation(id)}</div>
-      <div class="action-content">
-        <div class="action-header">
-          <strong>${escapeHtml(cls.name)}</strong>
-          <div class="action-meta"><span class="action-cost">${bonusParts.join(" · ")}</span></div>
-        </div>
-        <p class="action-desc">${escapeHtml(cls.description)}</p>
-        <div class="action-footer">
-          <div class="action-controls">
-            <button class="action-button" data-reincarnate="${escapeHtml(id)}" ${!state.can_reincarnate ? "disabled" : ""}>
-              ${state.can_reincarnate ? "Reincarnate" : "Requires Level 10"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </article>`;
-}
-
-function svgForReincarnation(id) {
-  const icons = {
-    warrior: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Warrior"><rect width="128" height="128" rx="22" fill="#171611"/><path d="M64 20l40 16v28c0 20-16 36-40 44-24-8-40-24-40-44V36l40-16Z" fill="#1b2d2b" stroke="#d9b56d" stroke-width="3"/><path d="M48 64l12 12 20-24" stroke="#d9b56d" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
-    sorcerer: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sorcerer"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="24" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M64 24v18M64 86v18M24 64h18M86 64h18" stroke="#7aa7ff" stroke-width="4" stroke-linecap="round"/><circle cx="64" cy="64" r="8" fill="#7aa7ff" opacity="0.8"/></svg>',
-    tamer: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Tamer"><rect width="128" height="128" rx="22" fill="#0d1515"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#65e3ce" opacity="0.12" stroke="#65e3ce" stroke-width="4"/><circle cx="46" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="64" cy="50" r="10" fill="#65e3ce" opacity="0.7"/><circle cx="82" cy="54" r="10" fill="#65e3ce" opacity="0.7"/><path d="M36 40l10 12M92 40l-10 12" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
-    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Class"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
-  };
-  return icons[id] || icons.default;
-}
-
-function renderSinsTab() {
-  const sins = state.sins || [];
-  return `
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Sin System</h3><span>Unlock at higher levels</span></div>
-      <p class="tab-hint">The Sin System unlocks powerful passive modifiers as you grow stronger.</p>
-      <div class="action-list">
-        ${sins.map(sinRow).join("")}
-      </div>
-    </section>`;
-}
-
-function sinRow(sin) {
-  return `
-    <article class="action-item sin-item ${sin.unlocked ? "unlocked" : ""}">
-      <div class="action-art">${svgForSin(sin.id)}</div>
-      <div class="action-content">
-        <div class="action-header">
-          <strong>${escapeHtml(sin.name)}</strong>
-          <div class="action-meta"><span class="action-cost">${sin.unlocked ? `Level ${sin.level}` : `Unlocks Lv. ${sin.unlock_level}`}</span></div>
-        </div>
-        <p class="action-desc">${escapeHtml(sin.description)}</p>
-        <div class="action-footer">
-          <div class="action-controls">
-            ${sin.unlocked
-              ? `<button class="action-button" data-sin-level="${escapeHtml(sin.id)}">Level Up (${10 * sin.level} ✦)</button>`
-              : `<button class="action-button" data-sin-unlock="${escapeHtml(sin.id)}" ${!sin.can_unlock ? "disabled" : ""}>Unlock</button>`}
-          </div>
-        </div>
-      </div>
-    </article>`;
-}
-
-function svgForSin(id) {
-  const icons = {
-    gluttony: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gluttony"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="64" r="30" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><path d="M48 64h32M56 52h16M56 76h16" stroke="#d9b56d" stroke-width="4" stroke-linecap="round"/></svg>',
-    sloth: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sloth"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="30" fill="#65e3ce" opacity="0.2" stroke="#65e3ce" stroke-width="3"/><path d="M48 64h32" stroke="#65e3ce" stroke-width="4" stroke-linecap="round"/><path d="M64 48v32" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" opacity="0.5"/></svg>',
-    greed: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Greed"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="64" r="30" fill="#d9b56d" opacity="0.2" stroke="#d9b56d" stroke-width="3"/><path d="M64 40v48M40 64h48" stroke="#d9b56d" stroke-width="4" stroke-linecap="round"/><circle cx="64" cy="64" r="8" fill="#d9b56d" opacity="0.8"/></svg>',
-    pride: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pride"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="30" fill="#7aa7ff" opacity="0.2" stroke="#7aa7ff" stroke-width="3"/><path d="M64 20l12 24 26 4-19 18 4 26-23-12-23 12 4-26-19-18 26-4 12-24Z" fill="#7aa7ff" opacity="0.3"/></svg>',
-    envy: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Envy"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="30" fill="#65e3ce" opacity="0.2" stroke="#65e3ce" stroke-width="3"/><path d="M48 56l16 16 16-16" stroke="#65e3ce" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
-    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sin"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
-  };
-  return icons[id] || icons.default;
-}
-
-function renderCombatTab() {
-  return `
-    <section class="actions-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Combat</h3><span>${state.total_victories} victories</span></div>
-      <p class="tab-hint">Choose a region to begin an expedition. Defeat all encounters to clear the region.</p>
-      <div class="regions">${state.zones.map(regionCard).join("")}</div>
-    </section>`;
-}
-
-function renderStoryTab() {
-  return `
-    <section class="stories-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Stories</h3><span>Discovered but not yet started</span></div>
-      <div class="story-list">${(state.available_stories || []).map(s => storyRow(s)).join("") || '<p class="empty-tab">No stories available yet. Keep playing to discover new ones.</p>'}</div>
-    </section>
-    <section class="log-section">
-      <div class="section-title"><h3><span class="title-ornament">◆</span> Living chronicle</h3><span>${state.total_victories} victories recorded</span></div>
-      <div class="log-list">${[...state.log].reverse().map(logEntry).join("")}</div>
-    </section>`;
-}
-
-function meter(value, max, type, label) {
-  return `<div class="meter ${type}" role="progressbar" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="${max}" aria-valuenow="${value}"><span style="--value:${clampPercent(value, max)}%"></span></div>`;
-}
-
-function bar(label, value, max, type) {
-  return `<div><div class="bar-label"><span>${escapeHtml(label)}</span><b>${value} / ${max}</b></div>${meter(value, max, type, label)}</div>`;
-}
-
-function svgForAction(id) {
-  const icons = {
-    gather_dew: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gather dew"><rect width="128" height="128" rx="22" fill="#0d1515"/><circle cx="64" cy="64" r="36" fill="#132a2c" stroke="#5dd9c7" stroke-width="3" opacity="0.8"/><path d="M64 24c-18 21-28 34-28 48 0 16 12 28 28 28s28-12 28-28c0-14-10-27-28-48Z" fill="#8ff2df"/><path d="M64 38c-8 13-16 22-16 29 0 9 7 16 16 16s16-7 16-16c0-7-8-16-16-29Z" fill="#dffdf6" opacity="0.42"/><path d="M52 88c7 5 13 8 12 17M76 88c-7 6-13 9-12 17" stroke="#9cf7e6" stroke-width="5" stroke-linecap="round" opacity="0.8"/></svg>',
-    analyze_moss: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Analyze moss"><rect width="128" height="128" rx="22" fill="#0d1320"/><circle cx="64" cy="64" r="34" fill="#14263f" stroke="#7aa7ff" stroke-width="3"/><path d="M40 66c8-20 20-30 34-30 15 0 26 8 34 24-6 4-10 7-15 10-9-8-18-11-30-10-7 1-14 4-23 6Z" fill="#67a6ff" opacity="0.8"/><path d="M44 74c10-7 20-10 32-8 9 1 17 5 25 12" stroke="#dce9ff" stroke-width="5" stroke-linecap="round" fill="none"/><circle cx="46" cy="72" r="5" fill="#dce9ff"/><path d="M78 38l15 27M85 38l19 13M68 45l18 23" stroke="#dce9ff" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
-    shape_body: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Shape body"><rect width="128" height="128" rx="22" fill="#171611"/><circle cx="64" cy="52" r="22" fill="#f1c574"/><path d="M34 95c8-20 24-30 30-30s22 10 30 30" fill="#f1c574" opacity="0.9"/><path d="M54 36c6-13 18-18 30-14" stroke="#ffd994" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.8"/><path d="M36 54c8-15 18-21 28-23" stroke="#ffd994" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.5"/><path d="M92 54c-8-15-18-21-28-23" stroke="#ffd994" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.5"/></svg>',
-    follow_roar: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Follow roar"><rect width="128" height="128" rx="22" fill="#0b1415"/><path d="M64 20l40 16v28c0 20-16 36-40 44-24-8-40-24-40-44V36l40-16Z" fill="#1b2d2b" stroke="#65e3ce" stroke-width="3"/><path d="M48 64l12 12 20-24" stroke="#65e3ce" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
-    silent_scout: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Silent scout"><rect width="128" height="128" rx="22" fill="#0b1415"/><circle cx="64" cy="64" r="30" fill="#1b2d2b" stroke="#8de0d0" stroke-width="3"/><path d="M64 26c-20 0-36 16-36 38s16 38 36 38 36-16 36-38-16-38-36-38Z" fill="#172a2a" stroke="#8de0d0" stroke-width="3"/><circle cx="64" cy="64" r="9" fill="#8de0d0"/><path d="M64 18v18M64 110v18M18 64h18M92 64h18" stroke="#8de0d0" stroke-width="4" stroke-linecap="round" opacity="0.8"/></svg>',
-    magicule_circulation: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Magicule circulation"><rect width="128" height="128" rx="22" fill="#0d1618"/><circle cx="64" cy="64" r="34" fill="#112a2d" stroke="#8fe7d3" stroke-width="3"/><path d="M64 25v18M64 85v18M25 64h18M85 64h18" stroke="#8fe7d3" stroke-width="5" stroke-linecap="round"/><circle cx="64" cy="64" r="11" fill="#8fe7d3" opacity="0.95"/><path d="M42 42l12 12M86 86l12 12M42 86l12-12M86 42l12-12" stroke="#c8fff1" stroke-width="4" stroke-linecap="round" opacity="0.7"/></svg>',
-    talk_goblins: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Talk to goblins"><rect width="128" height="128" rx="22" fill="#171612"/><path d="M28 38h52c12 0 22 10 22 22v15c0 12-10 22-22 22H58l-16 14v-14H28c-12 0-22-10-22-22V60c0-12 10-22 22-22Z" fill="#f5d081" opacity="0.15" stroke="#f5d081" stroke-width="4"/><path d="M40 58h32M40 74h22" stroke="#f5d081" stroke-width="5" stroke-linecap="round"/><circle cx="96" cy="52" r="18" fill="#f5d081" opacity="0.8"/><path d="M89 49l7 7 14-15" stroke="#171612" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    train_allies: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Train allies"><rect width="128" height="128" rx="22" fill="#17140f"/><path d="M28 92c8-20 22-30 36-30s28 10 36 30" fill="#f0c974" opacity="0.18" stroke="#f0c974" stroke-width="4"/><circle cx="46" cy="54" r="12" fill="#f0c974"/><circle cx="64" cy="50" r="12" fill="#f0c974"/><circle cx="82" cy="54" r="12" fill="#f0c974"/><path d="M36 40l10 12M92 40l-10 12" stroke="#f0c974" stroke-width="4" stroke-linecap="round" opacity="0.8"/><path d="M54 98l10-18 10 18" stroke="#f7df9d" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
-    default: '<svg width="42" height="42" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Default action"><rect width="128" height="128" rx="22" fill="#10181a"/><circle cx="64" cy="64" r="28" fill="#26363a" stroke="#9eb8bd" stroke-width="3"/><path d="M64 36v56M36 64h56" stroke="#9eb8bd" stroke-width="6" stroke-linecap="round" opacity="0.8"/></svg>'
-  };
-  return icons[id] || icons.default;
-}
-
-function svgForStory(story) {
-  const id = String(story?.id || "");
-  const isCave = /cave|marsh|deep|grotto|tunnel/i.test(id);
-  const isVillage = /village|goblin|forest|road|camp/i.test(id);
-  const isRuins = /ruin|ancient|temple|crypt|sentinel/i.test(id);
-  if (isCave) {
-    return '<svg width="46" height="46" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cave story"><rect width="128" height="128" rx="18" fill="#0e1115"/><path d="M16 88c20-26 31-38 48-38 17 0 31 12 48 38v18H16V88Z" fill="#203440"/><path d="M30 84c8-18 18-26 34-26s26 8 34 26" stroke="#7fe5d4" stroke-width="5" fill="none" stroke-linecap="round"/><circle cx="64" cy="48" r="10" fill="#7fe5d4" opacity="0.8"/></svg>';
-  }
-  if (isRuins) {
-    return '<svg width="46" height="46" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ruins story"><rect width="128" height="128" rx="18" fill="#120f14"/><path d="M22 92h84L94 36H34l-12 56Z" fill="#2a2135" stroke="#d9b56d" stroke-width="3"/><path d="M46 92V58h32v34M30 92V66h12v26M86 92V66h12v26" stroke="#d9b56d" stroke-width="4" fill="none"/><circle cx="64" cy="50" r="10" fill="#d9b56d" opacity="0.8"/></svg>';
-  }
-  if (isVillage) {
-    return '<svg width="46" height="46" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Village story"><rect width="128" height="128" rx="18" fill="#0d1410"/><path d="M20 90h88v18H20z" fill="#1a2d24"/><path d="M34 90V56l28-24 28 24v34" fill="#20372d" stroke="#8fe7d3" stroke-width="3"/><path d="M48 90V68h32v22" fill="#8fe7d3" opacity="0.18"/><path d="M60 43h8v12h-8z" fill="#8fe7d3" opacity="0.8"/></svg>';
-  }
-  return '<svg width="46" height="46" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Story default"><rect width="128" height="128" rx="18" fill="#0d1416"/><rect x="24" y="24" width="80" height="80" rx="16" fill="#14222d" stroke="#7fe5d4" stroke-width="3"/><path d="M38 46h52M38 64h44M38 82h34" stroke="#7fe5d4" stroke-width="5" stroke-linecap="round"/><circle cx="86" cy="82" r="10" fill="#7fe5d4" opacity="0.8"/></svg>';
-}
-
-function actionRow(action) {
-  const running = state.activity && state.activity.action_id === action.id;
-  const disabled = state.focus < action.cost || !!state.battle || running;
-  // compute queued count for this action from aggregated queue provided by server
-  const queueCount = (state.action_queue || []).reduce((sum, item) => sum + (item.id === action.id ? item.count : 0), 0);
-  const progressHtml = running
-    ? `<div class="action-progress">${meter(state.activity.progress, 100, 'progress', action.name)}</div>`
-    : "";
-  const queuedBadge = queueCount > 0 ? `<span class="queued-badge">${queueCount}</span>` : "";
-  const buttons = running
-    ? `<div class="action-buttons"><button class="action-cancel" data-cancel>Cancel</button></div>`
-    : `<div class="action-buttons">${queuedBadge}<button class="action-button" data-action="${escapeHtml(action.id)}" data-count="1" ${disabled ? "disabled" : ""}>×1</button><button class="action-button" data-action="${escapeHtml(action.id)}" data-count="5" ${disabled ? "disabled" : ""}>×5</button></div>`;
-  return `
-    <article class="action-item action-card" data-action-id="${escapeHtml(action.id)}">
-      ${queueCount > 0 ? `<span class="card-queued">${queueCount}</span>` : ""}
-      <div class="action-art">${svgForAction(action.id)}</div>
-      <div class="action-content">
-        <div class="action-header">
-          <strong>${escapeHtml(action.name)}</strong>
-          <div class="action-meta"><span class="action-cost">${action.cost} Focus</span><span class="action-reward">+${action.resource} ${escapeHtml(state.resource_label)}</span></div>
-        </div>
-        <p class="action-desc">${escapeHtml(action.description)}</p>
-        <div class="action-footer">
-          ${progressHtml}
-          <div class="action-controls">${buttons}</div>
-        </div>
-      </div>
-    </article>`;
-}
-
-function storyRow(story) {
-  const icon = svgForStory(story);
-  return `
-    <article class="story-item">
-      <div class="story-left">${icon}</div>
-      <div class="story-main"><strong>${escapeHtml(story.title)}</strong><p>${escapeHtml(story.text || story.subtitle || '')}</p></div>
-      <div class="story-right"><button class="story-start" data-story="${escapeHtml(story.id)}">Start</button></div>
-    </article>`;
-}
-
-function enemySigilSvg(name = "Enemy") {
-  const lower = String(name).toLowerCase();
-  const isSpider = /spider|fang|web|crawler/i.test(lower);
-  const isLizard = /lizard|serpent|basilisk|reptile/i.test(lower);
-  const isGoblin = /goblin|wolf|orc|bandit/i.test(lower);
-  const isBoss = /boss|sentinel|guardian|captain|centipede|basilisk/i.test(lower);
-
-  if (isSpider) {
-    return `<div class="enemy-sigil" aria-label="Spider enemy"><svg viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="#ef8674" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="80" cy="82" r="26" fill="#221415" stroke="#ef8674"/><circle cx="80" cy="82" r="8" fill="#ef8674"/>
-      <path d="M26 56L48 64M134 56L112 64M26 104L48 96M134 104L112 96M58 32L66 54M102 32L94 54M58 128L66 106M102 128L94 106"/>
-      <path d="M54 96L40 118M106 96L120 118M54 64L38 44M106 64L122 44"/>
-    </g></svg></div>`;
-  }
-
-  if (isLizard) {
-    return `<div class="enemy-sigil" aria-label="Lizard enemy"><svg viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="#ef8674" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M32 90c12-28 24-42 48-42s36 14 48 42c-8 18-24 30-48 30s-40-12-48-30Z" fill="#1c1719"/>
-      <path d="M44 66l18-20M116 66l-18-20M58 44l8 18M102 44l-8 18"/>
-      <circle cx="62" cy="86" r="6" fill="#ef8674"/><circle cx="98" cy="86" r="6" fill="#ef8674"/>
-      <path d="M68 104l12 14 12-14"/>
-    </g></svg></div>`;
-  }
-
-  if (isGoblin) {
-    return `<div class="enemy-sigil" aria-label="Goblin enemy"><svg viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="#ef8674" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M54 102l-20-20 26-28 30 10 20-10 26 28-20 20H54Z" fill="#1f1718"/>
-      <circle cx="66" cy="76" r="5" fill="#ef8674"/><circle cx="94" cy="76" r="5" fill="#ef8674"/>
-      <path d="M66 98h28"/>
-    </g></svg></div>`;
-  }
-
-  if (isBoss) {
-    return `<div class="enemy-sigil boss" aria-label="Boss enemy"><svg viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="#f4c08d" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M80 24L120 52L102 118H58L40 52L80 24Z" fill="#241a16"/>
-      <path d="M80 46V106M52 64h56M52 96h56"/>
-      <circle cx="80" cy="78" r="8" fill="#f4c08d"/>
-    </g></svg></div>`;
-  }
-
-  return `<div class="enemy-sigil" aria-label="Enemy sigil"><svg viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="#ef8674" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M80 22L118 56L102 120H58L42 56L80 22Z" fill="#1b181b"/>
-    <path d="M80 48v52M52 76h56M58 44l22 18 22-18"/>
-    <circle cx="80" cy="82" r="8" fill="#ef8674"/>
-  </g></svg></div>`;
-}
-
-// small thumb SVG used inside enemy lists to avoid font-rendering issues
-function enemyThumbSvg(name) {
-  const lower = String(name || '').toLowerCase();
-  let color = '#ef8674';
-  if (/lizard|basilisk|reptile|serpent/i.test(lower)) color = '#f4c08d';
-  if (/goblin|wolf|orc|bandit/i.test(lower)) color = '#8de0d0';
-  return `<svg class="enemy-thumb" width="36" height="36" viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="160" height="160" fill="transparent"/><g fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><circle cx="80" cy="80" r="36" fill="#0f1416" stroke="${color}"/><path d="M64 68c6-6 12-8 24-6" stroke="${color}" stroke-width="4" stroke-linecap="round"/><circle cx="70" cy="84" r="4" fill="${color}"/><circle cx="96" cy="84" r="4" fill="${color}"/></g></svg>`;
-}
-
-function logEntry(item) {
-  return `<div class="log-entry ${escapeHtml(item.kind)}">${escapeHtml(item.text)}</div>`;
-}
-
-function regionCard(zone) {
-  const total = zone.total_encounters || 5;
-  const clears = zone.runs || 0;
-  const bossReady = clears > 0 && clears % total === 0;
-  const label = bossReady ? `Challenge ${zone.boss}` : "Enter region";
-  const progress = `${Math.min(clears, total)} / ${total} sightings`;
-  return `
-    <article class="region-card ${zone.unlocked ? "" : "locked"}">
-      <strong>${escapeHtml(zone.name)}</strong>
-      <p>${escapeHtml(zone.subtitle)}</p>
-      <div class="region-progress"><span>${escapeHtml(progress)}</span>${bossReady ? "<span>⚔</span>" : ""}</div>
-      <button class="zone-button" data-zone="${escapeHtml(zone.id)}" ${!zone.unlocked || !!state.battle ? "disabled" : ""}>${escapeHtml(label)}</button>
-    </article>`;
-}
-
-function battlePanel() {
-  const battle = state.battle;
-  if (!battle) {
-    return `
-      <header class="battle-head"><p class="eyebrow">ENCOUNTER</p><div class="battle-head-row"><h2>The path is quiet</h2></div></header>
-      <div class="battle-stage"><div class="enemy-empty"><div class="empty-mark"></div><strong>No active enemy</strong><p>Choose an unlocked region to hunt, grow stronger, and advance its boss meter.</p></div></div>
-      <div class="enemy-info"><div class="enemy-title"><strong>Combat preparation</strong><span>Ready</span></div></div>
-      <div class="skill-list">${state.skills.map(skillPreview).join("")}</div>
-      <div class="battle-tools"><button class="ghost-button" id="rest-button">Rest · ${state.level * 2} gold</button></div>`;
-  }
-
-  // support grouped encounters: pick the current target and show summary
-  const enemies = Array.isArray(battle.enemies) ? battle.enemies : [];
-  const current = state.battle && state.battle.current_target ? state.battle.current_target : (enemies.find(e => e.hp > 0) || enemies[0] || {});
-  const title = enemies.length > 1 ? `Band of ${enemies.length}` : (current.name || "Unknown")
-  const subtitle = current.level ? `Level ${current.level}${battle.boss ? " · Boss" : ""}` : (battle.boss ? "Boss" : "")
-
-  return `
-    <header class="battle-head">
-      <p class="eyebrow">${battle.boss ? "REGION BOSS" : "ENCOUNTER"} · TURN ${battle.turn}</p>
-      <div class="battle-head-row"><h2>${escapeHtml(title)}</h2><label class="auto-label"><input type="checkbox" id="auto-combat" /> Auto</label></div>
-    </header>
-    <div class="battle-stage">${enemySigilSvg(current.name || title)}</div>
-    <div class="enemy-info">
-      <div class="enemy-title"><strong>${escapeHtml(current.name || title)}</strong><span>${escapeHtml(subtitle)}</span></div>
-      ${bar("Enemy vitality", current.hp || 0, current.max_hp || 1, "hp")}
-      ${enemies.length > 1 ? `<div class="enemy-list">${enemies.map((e, i) => `<button class="enemy-list-item${(selectedEnemyIndex === i) ? ' selected' : ''}" data-target="${i}"><span class="enemy-icon">${enemyThumbSvg(e.name)}</span><span class="enemy-label">${escapeHtml(e.name)}</span><span class="enemy-hp">${e.hp}/${e.max_hp}</span></button>`).join("")}</div>` : ""}
-    </div>
-    <div class="skill-list">${state.skills.map(skillButton).join("")}</div>
-    <div class="battle-tools"><button class="ghost-button" id="flee-button">Withdraw</button></div>`;
-}
-
-function skillPreview(skill) {
-  const status = skill.unlocked ? `${skill.mana} Mana` : `Unlocks Lv. ${skill.level}`;
-  return `<button class="skill-button" disabled><span><strong>${escapeHtml(skill.name)}</strong><span>${escapeHtml(skill.description)}</span></span><b class="skill-cost">${status}</b></button>`;
-}
-
-function skillButton(skill) {
-  const resourceCost = skill.resource_cost ? ` · ${skill.resource_cost} ${state.resource_label}` : "";
-  const disabled = !skill.unlocked || state.mana < skill.mana || (skill.resource_cost || 0) > state[state.resource_key];
-  const status = skill.unlocked ? `${skill.mana} Mana${resourceCost}` : `Unlocks Lv. ${skill.level}`;
-  return `<button class="skill-button" data-skill="${escapeHtml(skill.id)}" ${disabled ? "disabled" : ""}><span><strong>${escapeHtml(skill.name)}</strong><span>${escapeHtml(skill.description)}</span></span><b class="skill-cost">${escapeHtml(status)}</b></button>`;
-}
-
-function bindGameEvents() {
-  app.querySelectorAll("[data-action]").forEach((button) =>
-    button.addEventListener("click", () => mutate("/api/action", { action: button.dataset.action, count: Number(button.dataset.count) }))
-  );
-  app.querySelectorAll("[data-zone]").forEach((button) =>
-    button.addEventListener("click", () => mutate("/api/combat/start", { zone: button.dataset.zone }))
-  );
-  app.querySelectorAll("[data-skill]").forEach((button) =>
-    button.addEventListener("click", () => {
-      // include the selected enemy index when sending the combat turn
-      mutate("/api/combat/turn", { skill: button.dataset.skill, target: selectedEnemyIndex });
-    })
-  );
-  app.querySelectorAll(".enemy-list-item").forEach((btn) => btn.addEventListener("click", (e) => {
-    const idx = Number(btn.dataset.target);
-    if (Number.isNaN(idx)) return;
-    selectedEnemyIndex = idx;
-    render();
-  }));
-  app.querySelectorAll("[data-cancel]").forEach((btn) => btn.addEventListener("click", () => mutate("/api/action/cancel")));
-  app.querySelectorAll(".story-start").forEach((btn) => btn.addEventListener("click", () => mutate("/api/story/start", { node: btn.dataset.story })));
-  app.querySelector("#flee-button")?.addEventListener("click", () => mutate("/api/combat/flee"));
-  app.querySelector("#rest-button")?.addEventListener("click", () => mutate("/api/rest"));
-  app.querySelector("#auto-combat")?.addEventListener("change", (event) => toggleAuto(event.target.checked));
-  app.querySelector("#new-chronicle")?.addEventListener("click", async () => {
-    if (window.confirm("Erase this local save and choose a new origin?")) await mutate("/api/reset");
-  });
-
-  // --- Your Chronicle tab navigation ---
-  app.querySelectorAll(".tab-button").forEach((btn) => btn.addEventListener("click", () => {
-    activeTab = btn.dataset.tab;
-    render();
-  }));
-
-  // --- Loop actions ---
-  app.querySelectorAll("[data-loop-start]").forEach((btn) =>
-    btn.addEventListener("click", () => mutate("/api/loop/start", { action: btn.dataset.loopStart }))
-  );
-  app.querySelectorAll("[data-loop-stop]").forEach((btn) =>
-    btn.addEventListener("click", () => mutate("/api/loop/stop", { action: btn.dataset.loopStop }))
-  );
-
-  // --- Instant actions ---
-  app.querySelectorAll("[data-instant]").forEach((btn) =>
-    btn.addEventListener("click", () => mutate("/api/instant", { action: btn.dataset.instant }))
-  );
-
-  // --- Upgrade actions ---
-  app.querySelectorAll("[data-upgrade]").forEach((btn) =>
-    btn.addEventListener("click", () => mutate("/api/upgrade", { action: btn.dataset.upgrade }))
-  );
-
-  // --- Next actions ---
-  app.querySelectorAll("[data-next]").forEach((btn) =>
-    btn.addEventListener("click", () => mutate("/api/next", { action: btn.dataset.next }))
-  );
-
-  // --- Research / Summoning ---
-  app.querySelectorAll("[data-summon]").forEach((btn) =>
-    btn.addEventListener("click", () => mutate("/api/summon", { ally: btn.dataset.summon }))
-  );
-
-  // --- Prestige ---
-  app.querySelectorAll("[data-ritual]").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      if (window.confirm("Perform the Dark Ritual? This resets your level, resources, and progress in exchange for permanent Habit Points and Inspiration.")) {
-        mutate("/api/ritual");
-      }
-    })
-  );
-  app.querySelectorAll("[data-astral]").forEach((btn) =>
-    btn.addEventListener("click", () => mutate("/api/astral", { upgrade: btn.dataset.astral }))
-  );
-  app.querySelectorAll("[data-reincarnate]").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      if (window.confirm(`Reincarnate as a ${btn.dataset.reincarnate}? This resets almost everything but grants permanent class bonuses.`)) {
-        mutate("/api/reincarnate", { class: btn.dataset.reincarnate });
-      }
-    })
-  );
-
-  // --- Sins ---
-  app.querySelectorAll("[data-sin-unlock]").forEach((btn) =>
-    btn.addEventListener("click", () => mutate("/api/sin/unlock", { sin: btn.dataset.sinUnlock }))
-  );
-  app.querySelectorAll("[data-sin-level]").forEach((btn) =>
-    btn.addEventListener("click", () => mutate("/api/sin/level", { sin: btn.dataset.sinLevel }))
-  );
-}
-
-function renderChoice() {
-  const choice = state.pending_choice;
-  const overlay = document.createElement("div");
-  overlay.className = "choice-overlay";
-  overlay.innerHTML = `
-    <article class="choice-card">
-      <p class="eyebrow">${escapeHtml(choice.eyebrow)}</p>
-      <h2>${escapeHtml(choice.title)}</h2>
-      <p>${escapeHtml(choice.text)}</p>
-      <div class="choice-options">
-        ${choice.options.map((option) => `<button class="choice-button" data-choice="${escapeHtml(option.id)}"><strong>${escapeHtml(option.label)}</strong><span>${escapeHtml(option.description)}</span></button>`).join("")}
-      </div>
-    </article>`;
-  overlay.querySelectorAll("[data-choice]").forEach((button) =>
-    button.addEventListener("click", () => mutate("/api/choice", { choice: button.dataset.choice }))
-  );
-  app.appendChild(overlay);
-}
-
-function toggleAuto(enabled) {
-  window.clearInterval(autoTimer);
-  autoTimer = null;
-  if (!enabled || !state?.battle) return;
-  autoTimer = window.setInterval(async () => {
-    if (busy || !state?.battle) return stopAutoIfNeeded();
-    const usable = [...state.skills].reverse().find((skill) =>
-      skill.unlocked && state.mana >= skill.mana && (skill.resource_cost || 0) <= state[state.resource_key]
-    );
-    if (usable) {
-      // auto-select a target: prefer lowest hp alive
-      const enemies = Array.isArray(state.battle.enemies) ? state.battle.enemies : [];
-      const alive = enemies.filter(e => e.hp > 0);
-      let targetIdx = selectedEnemyIndex;
-      if (alive.length) {
-        // choose lowest HP enemy index
-        let minHp = Infinity; let minIdx = 0;
-        enemies.forEach((e, i) => { if (e.hp > 0 && e.hp < minHp) { minHp = e.hp; minIdx = i; } });
-        targetIdx = minIdx;
-      } else {
-        targetIdx = selectedEnemyIndex;
-      }
-      await mutate("/api/combat/turn", { skill: usable.id, target: targetIdx });
+function playEvent(e) {
+  switch (e.type) {
+    case "skill": {
+      const foe = $(`[data-foe="${e.target}"]`);
+      const big = e.damage >= (state?.attack || 1) * 3;
+      popAt(foe, String(e.damage), big ? "crit" : "");
+      shake(foe, "hit");
+      sound("hit");
+      break;
     }
-  }, 720);
-}
-
-function stopAutoIfNeeded() {
-  if (state?.battle) return;
-  window.clearInterval(autoTimer);
-  autoTimer = null;
-}
-
-async function refreshState() {
-  if (busy || !state?.started || state.battle) return;
-  try {
-    state = await api("/api/state");
-    render();
-  } catch (_) {
-    // A temporary local-server pause should not interrupt the player with alerts.
+    case "attack": {
+      const heroEl = $("[data-hero]");
+      popAt(heroEl, "-" + e.damage, "hurt");
+      shake(heroEl, "hero-hit");
+      sound("hurt");
+      break;
+    }
+    case "defeat": popAt($(`[data-foe="${e.target}"]`), "Defeated", "good"); break;
+    case "recruit": {
+      const name = state?.party?.find((a) => a.id === e.ally_id)?.name || cap(e.ally_id);
+      toast(`${name} asks to join you.`, "good", "people");
+      sound("good");
+      break;
+    }
+    case "encounter_advance": toast(`Encounter ${e.next}. You recover a little.`, "info", "swords"); break;
+    case "expedition_complete": showReport(true, e.zone); break;
+    case "expedition_failed": showReport(false, e.zone); break;
+    default: break;
   }
 }
+function showReport(won, zone) {
+  const run = state?.last_run || {};
+  const recruited = (run.recruited || []).map((id) => state?.party?.find((a) => a.id === id)?.name || cap(id));
+  const lines = won
+    ? [`${plural(run.victories || 0, "victory", "victories")}`, `+${fmt(run.earned_gold || 0)} Gold, +${fmt(run.earned_magicules || 0)} Magicules`, recruited.length ? `Recruited: ${recruited.join(", ")}` : "No one asked to join this time"]
+    : ["You escape with half your vitality.", "Rewards already earned are kept.", "Rest, level up, and try again."];
+  sound(won ? "win" : "hurt");
+  if (won && autoDungeon && autoDungeon === run.zone_id) {
+    toast(`${zone} cleared. Starting it again.`, "good", "trophy");
+    setTimeout(repeatDungeon, 1600);
+    return;
+  }
+  autoDungeon = null;
+  openModal(`<div class="modal report"><p class="kicker">${esc(zone)}</p><h2 class="big">${won ? "Expedition cleared" : "Expedition failed"}</h2><ul>${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul><button class="btn primary" data-close>Continue</button></div>`, "report");
+}
 
+async function repeatDungeon() {
+  if (!autoDungeon || state?.battle || overlayMode) return;
+  if (state.hp / state.max_hp < 0.5) { autoDungeon = null; paint(); toast("Dungeon repeat stopped: vitality is low.", "error"); return; }
+  if (!(await act("/api/combat/start", { zone: autoDungeon }, { sfx: "hit" }))) { autoDungeon = null; paint(); }
+}
+
+/* ---------------------------------------------------------------- overlays */
+function openModal(html, mode) {
+  overlayMode = mode;
+  overlayEl.className = "overlay";
+  overlayEl.innerHTML = html;
+  overlayEl.hidden = false;
+  overlayEl.querySelector("button")?.focus();
+}
+function closeOverlay() {
+  overlayEl.hidden = true;
+  overlayEl.innerHTML = "";
+  overlayMode = null;
+  clearInterval(typeTimer);
+  maybeShowScene();
+}
+overlayEl.addEventListener("click", (ev) => { if (ev.target.closest("[data-close]")) closeOverlay(); });
+function confirmDialog({ title, body, ok = "Confirm", danger = false }) {
+  return new Promise((resolve) => {
+    openModal(`<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}"><h2>${esc(title)}</h2><p>${esc(body)}</p><div class="btn-row"><button class="btn" data-no>Cancel</button><button class="btn ${danger ? "danger" : "primary"}" data-yes>${esc(ok)}</button></div></div>`, "confirm");
+    const done = (v) => { overlayEl.removeEventListener("click", onClick); document.removeEventListener("keydown", onKey, true); overlayEl.hidden = true; overlayEl.innerHTML = ""; overlayMode = null; resolve(v); maybeShowScene(); };
+    const onClick = (ev) => { if (ev.target.closest("[data-yes]")) done(true); else if (ev.target.closest("[data-no]") || ev.target === overlayEl) done(false); };
+    const onKey = (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); done(false); } };
+    overlayEl.addEventListener("click", onClick);
+    document.addEventListener("keydown", onKey, true);
+  });
+}
+
+/* ---- story scenes: several beats, questions that shape the story, then the choice and its aftermath */
+let typeTimer = null;
+let sceneNode = null;
+let sceneSteps = [];
+let sceneIdx = 0;
+let sceneAnswers = {};
+let sceneTyping = false;
+let sceneFull = "";
+
+function sceneArt(node) {
+  const t = `${node.id} ${node.eyebrow} ${node.title} ${node.speaker}`.toLowerCase();
+  if (/cave|veldora|voice|sage|prologue|marsh|pond|lantern/.test(t)) return "cave";
+  if (/goblin|village|forest|wolf|feast|bridge|gobta|rigurd|kijin|tempest|merchant|herbalist|shion|hakuro|benimaru|ranga|well|foundations/.test(t)) return "village";
+  if (/ruin|relic|library|orc|demon|walpurgis|clayman|falmuth|dwarf|dwargon|kaijin|gazel|harvest|diablo|invasion|reckoning/.test(t)) return "ruins";
+  return "hall";
+}
+const faceFor = (speaker) => (speaker === "You" ? heroArt(1, 0, 84) : creature(speaker, { size: 84 }));
+const pathChips = (traits) => Object.entries(traits || {}).map(([k, v]) => `<span class="tag violet">${esc(state?.paths?.[k]?.name || cap(k))} +${v}</span>`).join("");
+
+function maybeShowScene() {
+  if (overlayMode || !state?.pending_choice) return;
+  showScene(state.pending_choice);
+}
+function showScene(node) {
+  overlayMode = "scene";
+  sceneNode = node;
+  sceneAnswers = {};
+  sceneSteps = [...(node.beats || []), { kind: "main" }];
+  sceneIdx = 0;
+  sound("story");
+  overlayEl.className = "overlay bare";
+  overlayEl.hidden = false;
+  overlayEl.innerHTML = `
+    <div class="scene" role="dialog" aria-modal="true" aria-label="${esc(node.title)}">
+      <div class="scene-art">${Art.scene(sceneArt(node))}</div>
+      <div class="scene-body"><div class="scene-card">
+        <div class="scene-top"><p class="kicker">${esc(node.eyebrow)}</p><h2>${esc(node.title)}</h2></div>
+        <div class="speaker"><div class="face" id="face"></div><p class="who" id="who"></p><span class="step-count" id="step-count"></span></div>
+        <div class="dialog" id="dlg"><span id="dlg-text"></span><span class="skip" id="dlg-skip">Click or press Space to skip</span></div>
+        <div class="options" id="opts" hidden></div>
+        <div class="btn-row" id="next-row" hidden><button class="btn primary" id="scene-next">Continue</button></div>
+      </div></div>
+    </div>`;
+  renderStep();
+}
+function typeText(text, done) {
+  clearInterval(typeTimer);
+  const el = $("#dlg-text");
+  const skip = $("#dlg-skip");
+  sceneFull = text;
+  sceneTyping = true;
+  skip.hidden = false;
+  let n = 0;
+  const finish = () => {
+    clearInterval(typeTimer);
+    el.textContent = text;
+    sceneTyping = false;
+    skip.hidden = true;
+    done();
+  };
+  sceneFinish = finish;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { finish(); return; }
+  el.textContent = "";
+  typeTimer = setInterval(() => {
+    n += 2;
+    el.textContent = text.slice(0, n);
+    if (n % 6 === 0) sound("type");
+    if (n >= text.length) finish();
+  }, 20);
+}
+let sceneFinish = () => {};
+function renderStep() {
+  const step = sceneSteps[sceneIdx];
+  if (!step) { closeOverlay(); return; }
+  const opts = $("#opts");
+  const nextRow = $("#next-row");
+  opts.hidden = true;
+  nextRow.hidden = true;
+  opts.innerHTML = "";
+  $("#step-count").textContent = `${sceneIdx + 1} / ${sceneSteps.length}`;
+  const speaker = step.kind === "main" ? sceneNode.speaker : step.kind === "result" ? "Result" : step.speaker;
+  $("#who").textContent = step.kind === "result" ? "What changes" : speaker;
+  $("#face").innerHTML = step.kind === "result" ? icon("sparkle", 44) : faceFor(speaker);
+  const dlg = $("#dlg");
+  dlg.classList.toggle("outcome", step.kind === "result");
+  if (step.kind === "result") {
+    typeText(step.text, () => {
+      dlg.insertAdjacentHTML("beforeend", step.chips ? `<span class="chips" style="margin-top:12px;display:flex">${step.chips}</span>` : "");
+      nextRow.hidden = false;
+      $("#scene-next").dataset.close = "";
+      $("#scene-next").textContent = "Continue";
+      $("#scene-next").focus({ preventScroll: true });
+    });
+    return;
+  }
+  dlg.querySelectorAll(".chips").forEach((c) => c.remove());
+  if (step.kind === "main") {
+    typeText(sceneNode.text, () => {
+      opts.innerHTML = sceneNode.options.map((o, i) => o.locked
+        ? `<button class="option locked" disabled><span class="n">${icon("lock", 16)}</span><span><strong>${esc(o.label)}</strong><span class="d">${esc(o.hint || "Not open to you yet.")}</span></span></button>`
+        : `<button class="option" data-choice="${esc(o.id)}" style="animation-delay:${i * 80}ms"><span class="n">${i + 1}</span><span><strong>${esc(o.label)}</strong><span class="d">${esc(o.description)}</span></span></button>`).join("");
+      opts.hidden = false;
+      $(".option:not(.locked)", opts)?.focus({ preventScroll: true });
+    });
+  } else if (step.ask) {
+    typeText(step.text, () => {
+      opts.innerHTML = step.options.map((o, i) => `<button class="option" data-ask="${esc(step.ask)}" data-ask-opt="${esc(o.id)}" style="animation-delay:${i * 80}ms"><span class="n">${i + 1}</span><span><strong>${esc(o.label)}</strong></span></button>`).join("");
+      opts.hidden = false;
+      $(".option", opts)?.focus({ preventScroll: true });
+    });
+  } else {
+    typeText(step.text, () => { nextRow.hidden = false; $("#scene-next").focus({ preventScroll: true }); });
+  }
+}
+function advanceScene() {
+  if (sceneTyping) { sceneFinish(); return; }
+  if (!$("#next-row").hidden) {
+    sceneIdx += 1;
+    sound("click");
+    renderStep();
+  }
+}
+function answerAsk(askId, optId) {
+  const step = sceneSteps[sceneIdx];
+  const opt = step.options.find((o) => o.id === optId);
+  sceneAnswers[askId] = optId;
+  sceneSteps.splice(sceneIdx + 1, 0, ...(opt.lines || []));
+  sound("click");
+  sceneIdx += 1;
+  renderStep();
+}
+async function chooseOption(id) {
+  const node = sceneNode;
+  const option = node.options.find((o) => o.id === id);
+  if (!option || option.locked) return;
+  $$("#opts .option").forEach((b) => (b.disabled = true));
+  const ok = await act("/api/choice", { choice: id, beats: sceneAnswers }, { sfx: "good" });
+  if (!ok) { $$("#opts .option:not(.locked)").forEach((b) => (b.disabled = false)); return; }
+  overlayMode = "scene";
+  const gains = {};
+  const add = (t) => Object.entries(t || {}).forEach(([k, v]) => (gains[k] = (gains[k] || 0) + v));
+  node.beats.filter((b) => b.ask && sceneAnswers[b.ask]).forEach((b) => add(b.options.find((o) => o.id === sceneAnswers[b.ask])?.traits));
+  add(option.traits);
+  sceneSteps = [
+    { speaker: node.speaker, text: option.reply },
+    ...(option.aftermath || []),
+    { kind: "result", text: option.result, chips: pathChips(gains) },
+  ];
+  sceneIdx = 0;
+  renderStep();
+}
+
+/* ---------------------------------------------------------------- live updates (progress bars, countdowns) */
+function live() {
+  const t = nowSec();
+  for (const el of $$("[data-t1]")) {
+    const t0 = +el.dataset.t0, t1 = +el.dataset.t1;
+    el.style.width = `${Math.max(0, Math.min(1, (t - t0) / Math.max(0.001, t1 - t0))) * 100}%`;
+  }
+  for (const el of $$("[data-remain-to]")) {
+    const text = Math.max(0, Math.ceil(+el.dataset.remainTo - t)) + "s";
+    if (el.textContent !== text) el.textContent = text;
+  }
+  for (const el of $$("[data-cd-to]")) {
+    const left = Math.ceil(+el.dataset.cdTo - t);
+    if (left > 0) { const text = left + "s"; if (el.textContent !== text) el.textContent = text; el.disabled = true; }
+    else if (el.disabled && el.dataset.afford === "1") { el.disabled = false; el.textContent = "Use now"; el.removeAttribute("data-cd-to"); }
+  }
+  const f = $("[data-focus-next]");
+  if (f && state?.focus < state?.max_focus) {
+    const every = state.focus_recovery_seconds;
+    const last = state._last_focus_tick || t;
+    const left = Math.max(0, Math.ceil(every - ((t - last) % every)));
+    const text = `+1 in ${left}s`;
+    if (f.textContent !== text) f.textContent = text;
+  } else if (f && f.textContent) f.textContent = "";
+  requestAnimationFrame(live);
+}
+
+function scheduleWake() {
+  clearTimeout(wakeTimer);
+  const s = state;
+  if (!s?.started) return;
+  const times = [];
+  if (s.activity) times.push(s.activity.ends_at);
+  Object.values(s.loop_state || {}).forEach((l) => times.push(l.next_tick));
+  (s.instant_actions || []).forEach((a) => { if (a.cooldown_remaining > 0) times.push(nowSec() + a.cooldown_remaining); });
+  if (!times.length) return;
+  const next = Math.min(...times);
+  wakeTimer = setTimeout(refreshState, Math.max(300, (next - nowSec()) * 1000 + 250));
+}
+
+/* ---------------------------------------------------------------- input */
+const HANDLERS = {
+  begin: () => act("/api/new-game", { character: "rimuru" }, { sfx: "story" }),
+  go: (el) => { tab = el.dataset.tab; if (tab !== "battle") store.set("tab", tab); menuOpen = false; paint(); $("#stage")?.scrollTo({ top: 0 }); },
+  action: (el) => act("/api/action", { action: el.dataset.id, count: +el.dataset.count }),
+  cancel: () => act("/api/action/cancel"),
+  repeat: (el) => act("/api/action/auto", { action: el.dataset.id }, { sfx: "good" }),
+  autozone: (el) => { autoDungeon = autoDungeon === el.dataset.id ? null : el.dataset.id; sound("click"); paint(); },
+  "loop-start": (el) => act("/api/loop/start", { action: el.dataset.id }, { sfx: "good" }),
+  "loop-stop": (el) => act("/api/loop/stop", { action: el.dataset.id }),
+  instant: (el) => act("/api/instant", { action: el.dataset.id }, { sfx: "good" }),
+  upgrade: (el) => act("/api/upgrade", { action: el.dataset.id }, { sfx: "good" }),
+  next: (el) => act("/api/next", { action: el.dataset.id }, { sfx: "story" }),
+  party: (el) => act("/api/party/toggle", { ally: el.dataset.id }),
+  summon: (el) => act("/api/summon", { ally: el.dataset.id }, { sfx: "good" }),
+  "sin-unlock": (el) => act("/api/sin/unlock", { sin: el.dataset.id }, { sfx: "good" }),
+  "sin-level": (el) => act("/api/sin/level", { sin: el.dataset.id }, { sfx: "good" }),
+  astral: (el) => act("/api/astral", { upgrade: el.dataset.id }, { sfx: "good" }),
+  rest: () => act("/api/rest", {}, { sfx: "good" }),
+  zone: (el) => act("/api/combat/start", { zone: el.dataset.id }, { sfx: "hit" }),
+  story: (el) => act("/api/story/start", { node: el.dataset.id }),
+  skill: (el) => useSkill(el.dataset.id),
+  foe: (el) => { const i = +el.dataset.i; if (state.battle.enemies[i]?.hp > 0) { selectedFoe = i; sound("click"); paint(); } },
+  sound: () => { muted = !muted; store.set("muted", muted); if (!muted) sound("click"); paint(); },
+  menu: () => { menuOpen = !menuOpen; paint(); },
+  flee: async () => {
+    if (await confirmDialog({ title: "Withdraw from the expedition?", body: "Rewards you have already earned are kept, but you will have to start the expedition again.", ok: "Withdraw", danger: true })) {
+      auto = false; syncAuto(); act("/api/combat/flee");
+    }
+  },
+  newgame: async () => {
+    menuOpen = false; paint();
+    if (await confirmDialog({ title: "Erase this chronicle?", body: "This deletes your local save and returns you to the title screen. It cannot be undone.", ok: "Erase and restart", danger: true })) {
+      prev = null; eventsPrimed = false; playedEvents.clear(); tab = "actions";
+      await act("/api/reset", {});
+    }
+  },
+  ritual: async () => {
+    const r = state.dark_ritual;
+    if (await confirmDialog({ title: "Perform the Dark Ritual?", body: `You return to level 1 with base stats and no resources, loops or upgrades. You gain ${r.habit_gain} Habit Points and ${r.inspiration_gain} Inspiration. Allies, story and Astral upgrades stay.`, ok: "Perform the ritual", danger: true })) act("/api/ritual", {}, { sfx: "level" });
+  },
+  reincarnate: async (el) => {
+    if (await confirmDialog({ title: `Reincarnate as a ${el.dataset.name}?`, body: "You start over at level 1 with class bonuses. Allies and bonds are lost. Astral upgrades, Habit Points, Inspiration and story progress stay.", ok: "Reincarnate", danger: true })) act("/api/reincarnate", { class: el.dataset.id }, { sfx: "level" });
+  },
+};
+document.addEventListener("click", (ev) => {
+  const choice = ev.target.closest("[data-choice]");
+  if (choice) { chooseOption(choice.dataset.choice); return; }
+  const ask = ev.target.closest("[data-ask-opt]");
+  if (ask) { answerAsk(ask.dataset.ask, ask.dataset.askOpt); return; }
+  if (ev.target.closest("#scene-next")) { if (sceneSteps[sceneIdx]?.kind !== "result") advanceScene(); return; }
+  if (ev.target.closest("#dlg") && sceneTyping) { sceneFinish(); return; }
+  const el = ev.target.closest("[data-act]");
+  if (!el || el.tagName === "INPUT" || el.disabled || el.classList.contains("is-off")) {
+    if (menuOpen && !ev.target.closest(".menu-wrap")) { menuOpen = false; paint(); }
+    return;
+  }
+  const fn = HANDLERS[el.dataset.act];
+  if (fn) fn(el);
+});
+document.addEventListener("change", (ev) => {
+  const el = ev.target.closest('[data-act="auto"]');
+  if (!el) return;
+  auto = el.checked;
+  syncAuto();
+  sound("click");
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.target.closest("input, textarea")) return;
+  if (ev.key === "Escape" && menuOpen) { menuOpen = false; paint(); return; }
+  if ((ev.key === "Enter" || ev.key === " ") && ev.target.matches?.('[role="button"][data-act]')) { ev.preventDefault(); ev.target.click(); return; }
+  if (overlayMode === "scene") {
+    if (ev.key === " " || ev.key === "Enter") {
+      if (sceneTyping) { ev.preventDefault(); sceneFinish(); }
+      else if (!$("#next-row").hidden && sceneSteps[sceneIdx]?.kind !== "result") { ev.preventDefault(); advanceScene(); }
+      return;
+    }
+    const n = Number(ev.key);
+    if (n >= 1 && n <= 9 && !$("#opts").hidden) { const opt = $$("#opts .option")[n - 1]; if (opt && !opt.disabled) opt.click(); }
+    return;
+  }
+  if (overlayMode) return;
+  if (state?.battle && tab === "battle") {
+    const n = Number(ev.key);
+    if (n >= 1 && n <= state.skills.length) {
+      const k = state.skills[n - 1];
+      if (k.unlocked && state.mana >= k.mana) useSkill(k.id);
+    }
+  }
+});
+
+/* ---------------------------------------------------------------- boot */
 async function boot() {
   try {
-    state = await api("/api/state");
-    render();
-    refreshTimer = window.setInterval(refreshState, 2000);
+    setState(await api("/api/state"));
+    requestAnimationFrame(live);
+    setInterval(refreshState, 4000);
   } catch (error) {
-    app.innerHTML = `<section class="loading-screen"><p class="eyebrow">THE PYTHON SERVER IS ASLEEP</p><p>${escapeHtml(error.message)}</p></section>`;
+    app.innerHTML = `<section class="boot error"><div class="boot-orb"></div><p><strong>The game server is asleep.</strong><br>${esc(error.message)}<br>Run <code>python server.py</code> and reload.</p></section>`;
   }
 }
-
-boot();
+window.addEventListener("DOMContentLoaded", boot);
